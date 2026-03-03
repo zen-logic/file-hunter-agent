@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "file-hunter-agent"
+version = "1.0.17"
+description = "Remote agent for File Hunter — exposes filesystems to the central server"
+requires-python = ">=3.11"
+dependencies = [
+    "starlette>=0.27",
+    "uvicorn[standard]>=0.23",
+    "websockets>=12.0",
+    "xxhash>=3.0",
+    "python-multipart>=0.0.6",
+]
+
+[project.scripts]
+file-hunter-agent = "file_hunter_agent.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["file_hunter_agent*", "file_hunter_core*"]

@@ -1,0 +1,10 @@
+{
+  "server_url": "http://fileserver:8000",
+  "token": "paste-token-from-server-here",
+  "http_host": "0.0.0.0",
+  "http_port": 8001,
+  "locations": [
+    {"name": "Photos", "path": "/mnt/photos"},
+    {"name": "Music", "path": "/mnt/music"}
+  ]
+}
