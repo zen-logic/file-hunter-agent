@@ -32,10 +32,15 @@ def main():
         default=None,
         help="HTTP server port (default: 8001)",
     )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to config file (default: ./config.json)",
+    )
     args = parser.parse_args()
 
     # Load saved config
-    config.load_config()
+    config.load_config(args.config)
 
     # Apply CLI overrides and save
     updates = {}

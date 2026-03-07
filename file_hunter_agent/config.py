@@ -21,9 +21,11 @@ _CONFIG_FILE = Path("config.json")
 _config: dict = {}
 
 
-def load_config() -> dict:
+def load_config(path: str | None = None) -> dict:
     """Load config from disk. Returns empty dict if file doesn't exist."""
-    global _config
+    global _config, _CONFIG_FILE
+    if path:
+        _CONFIG_FILE = Path(path)
     if _CONFIG_FILE.exists():
         _config = json.loads(_CONFIG_FILE.read_text())
     else:
