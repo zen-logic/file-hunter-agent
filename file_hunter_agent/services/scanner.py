@@ -6,7 +6,8 @@ asyncio.to_thread() to keep the event loop responsive.
 Incremental mode: on rescan, compares filesystem state against a local
 cache to identify new/changed/deleted files. Only new and changed files
 are hashed and sent to the server. Deleted file paths are reported so
-the server can mark them stale.
+the server can mark them stale. The cache is updated incrementally as
+batches are processed, so cancelled scans can resume.
 """
 
 import asyncio
@@ -91,11 +92,14 @@ async def _run_scan(path: str, root_path: str):
     file_batch = []
     all_files = []
 
+    from file_hunter_agent.services.cache import ScanCache
+
+    scan_cache = ScanCache(root_path)
+
     try:
         # --- Load cache for incremental mode ---
-        from file_hunter_agent.services.cache import load_cache, save_cache
-
-        cache = await asyncio.to_thread(load_cache, root_path)
+        await asyncio.to_thread(scan_cache.open)
+        cache = await asyncio.to_thread(scan_cache.load)
         incremental = bool(cache)
         if incremental:
             logger.info(
@@ -171,6 +175,7 @@ async def _run_scan(path: str, root_path: str):
             deleted_paths = [rp for rp in cache if rp not in seen_paths]
             if deleted_paths:
                 logger.info("Incremental: %d deleted files detected", len(deleted_paths))
+                await asyncio.to_thread(scan_cache.remove_deleted, deleted_paths)
 
         # --- Hashing phase: only new/changed files ---
         logger.info(
@@ -216,6 +221,7 @@ async def _run_scan(path: str, root_path: str):
 
             if len(file_batch) >= BATCH_SIZE:
                 await _send({"type": "scan_files", "path": path, "files": file_batch})
+                await asyncio.to_thread(scan_cache.update_batch, file_batch)
                 file_batch = []
 
             # Throttled progress
@@ -236,6 +242,7 @@ async def _run_scan(path: str, root_path: str):
         # Flush remaining batch
         if file_batch:
             await _send({"type": "scan_files", "path": path, "files": file_batch})
+            await asyncio.to_thread(scan_cache.update_batch, file_batch)
 
         await _send(
             {
@@ -248,16 +255,6 @@ async def _run_scan(path: str, root_path: str):
                 "deleted": deleted_paths,
             }
         )
-
-        # Save cache on successful completion
-        new_cache = {}
-        for rp in seen_paths:
-            cached = cache.get(rp)
-            if cached:
-                new_cache[rp] = cached
-        for fi in all_files:
-            new_cache[fi["rel_path"]] = (fi["file_size"], fi["modified_date"])
-        await asyncio.to_thread(save_cache, root_path, new_cache)
 
     except Exception as e:
         logger.error("Scan failed with exception: %s", e, exc_info=True)
@@ -277,5 +274,6 @@ async def _run_scan(path: str, root_path: str):
             files_hashed,
             files_unchanged,
         )
+        await asyncio.to_thread(scan_cache.close)
         _scanning = False
         _current_path = ""
