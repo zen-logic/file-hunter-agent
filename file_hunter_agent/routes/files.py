@@ -139,12 +139,6 @@ async def file_hash(request: Request):
 
     from file_hunter_core.hasher import hash_file_sync
 
-    try:
-        hash_fast, hash_strong = await asyncio.to_thread(hash_file_sync, path)
-    except Exception as e:
-        logger.error("Backfill hash failed: %s: %r", path, e)
-        raise
-
     _hash_count += 1
     now = time.monotonic()
     if _hash_count == 1:
@@ -164,11 +158,15 @@ async def file_hash(request: Request):
             _hash_count = 1
             _hash_start = now
             logger.info("Backfill hashing started")
-        elif _hash_count % 100 == 0:
-            elapsed = now - _hash_start
-            rate = _hash_count / elapsed if elapsed > 0 else 0
-            logger.info("Backfill hashing: %d files (%.1f/sec)", _hash_count, rate)
     _hash_last = now
+
+    logger.info("Backfill hash #%d: %s", _hash_count, path)
+
+    try:
+        hash_fast, hash_strong = await asyncio.to_thread(hash_file_sync, path)
+    except Exception as e:
+        logger.error("Backfill hash failed: %s: %r", path, e)
+        raise
 
     return json_ok({"hash_fast": hash_fast, "hash_strong": hash_strong})
 

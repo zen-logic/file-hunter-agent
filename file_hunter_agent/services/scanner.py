@@ -228,6 +228,9 @@ async def _run_scan(path: str, root_path: str):
             now = time.monotonic()
             if now - last_progress >= PROGRESS_INTERVAL:
                 last_progress = now
+                logger.info(
+                    "Hashing [%d/%d]: %s", files_hashed, len(all_files), fp
+                )
                 await _send(
                     {
                         "type": "scan_progress",
