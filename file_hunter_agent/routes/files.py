@@ -187,6 +187,30 @@ async def file_content(request: Request):
     return FileResponse(path, media_type=content_type or "application/octet-stream")
 
 
+async def stream_write(request: Request):
+    """Accept raw binary body and stream it to a file on disk.
+
+    Path is provided as a query parameter: POST /files/stream-write?path=...
+    """
+    path = request.query_params.get("path", "")
+    if not path:
+        return json_error("path is required.")
+    if not is_path_allowed(path):
+        return json_error(_FORBIDDEN, status=403)
+
+    parent = os.path.dirname(path)
+    if not await asyncio.to_thread(os.path.isdir, parent):
+        return json_error("Parent directory not found.", status=404)
+
+    total = 0
+    with open(path, "wb") as f:
+        async for chunk in request.stream():
+            f.write(chunk)
+            total += len(chunk)
+
+    return json_ok({"written": path, "size": total})
+
+
 async def file_delete(request: Request):
     """Delete a file from disk."""
     body = await request.json()

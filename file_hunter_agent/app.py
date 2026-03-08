@@ -21,6 +21,7 @@ from file_hunter_agent.routes.files import (
     file_stat,
     file_exists,
     file_hash,
+    stream_write,
 )
 from file_hunter_agent.routes.folders import (
     folder_create,
@@ -73,6 +74,7 @@ def create_app():
             Route("/files/stat", file_stat, methods=["POST"]),
             Route("/files/exists", file_exists, methods=["POST"]),
             Route("/files/hash", file_hash, methods=["POST"]),
+            Route("/files/stream-write", stream_write, methods=["POST"]),
             Route("/folders/create", folder_create, methods=["POST"]),
             Route("/folders/delete", folder_delete, methods=["POST"]),
             Route("/folders/move", folder_move, methods=["POST"]),
