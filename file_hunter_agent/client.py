@@ -53,7 +53,7 @@ async def run_client():
             async with websockets.connect(
                 ws_url,
                 ping_interval=30,
-                ping_timeout=10,
+                ping_timeout=30,
                 close_timeout=5,
             ) as ws:
                 _ws = ws
