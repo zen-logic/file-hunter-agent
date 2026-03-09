@@ -148,7 +148,11 @@ async def _run_scan(path: str, root_path: str):
 
                 if incremental:
                     cached = cache.get(rel_path)
-                    if cached and cached[0] == fi["file_size"] and cached[1] == fi["modified_date"]:
+                    if (
+                        cached
+                        and cached[0] == fi["file_size"]
+                        and cached[1] == fi["modified_date"]
+                    ):
                         files_unchanged += 1
                         continue
 
@@ -174,7 +178,9 @@ async def _run_scan(path: str, root_path: str):
         if incremental:
             deleted_paths = [rp for rp in cache if rp not in seen_paths]
             if deleted_paths:
-                logger.info("Incremental: %d deleted files detected", len(deleted_paths))
+                logger.info(
+                    "Incremental: %d deleted files detected", len(deleted_paths)
+                )
                 await asyncio.to_thread(scan_cache.remove_deleted, deleted_paths)
 
         # --- Hashing phase: only new/changed files ---
@@ -199,8 +205,8 @@ async def _run_scan(path: str, root_path: str):
 
             fp = fi["full_path"]
 
-            # Hidden files — never hash
-            if fi.get("hidden"):
+            # Hidden or zero-byte files — never hash
+            if fi.get("hidden") or fi.get("file_size", 0) == 0:
                 fi["hash_partial"] = None
                 fi["hash_fast"] = None
                 fi["hash_strong"] = None
@@ -228,9 +234,7 @@ async def _run_scan(path: str, root_path: str):
             now = time.monotonic()
             if now - last_progress >= PROGRESS_INTERVAL:
                 last_progress = now
-                logger.info(
-                    "Hashing [%d/%d]: %s", files_hashed, len(all_files), fp
-                )
+                logger.info("Hashing [%d/%d]: %s", files_hashed, len(all_files), fp)
                 await _send(
                     {
                         "type": "scan_progress",
