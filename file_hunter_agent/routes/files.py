@@ -164,9 +164,9 @@ async def file_hash(request: Request):
 
     try:
         hash_fast, hash_strong = await asyncio.to_thread(hash_file_sync, path)
-    except Exception as e:
+    except OSError as e:
         logger.error("Backfill hash failed: %s: %r", path, e)
-        raise
+        return json_error(f"Hash failed: {e}", status=500)
 
     return json_ok({"hash_fast": hash_fast, "hash_strong": hash_strong})
 
