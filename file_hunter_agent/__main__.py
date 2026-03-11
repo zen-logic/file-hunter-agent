@@ -89,7 +89,7 @@ def main():
     from file_hunter_agent.app import create_app
 
     app = create_app()
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    uvicorn.run(app, host=host, port=port, log_level="warning", log_config=None)
 
 
 if __name__ == "__main__":
