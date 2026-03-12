@@ -3,12 +3,15 @@
 Synchronous. The agent endpoint wraps this in asyncio.to_thread().
 """
 
+import logging
 import os
 import stat
 from datetime import datetime, timezone
 
 from file_hunter_core.classify import classify_file
 from file_hunter_core.hasher import hash_file_partial_sync
+
+logger = logging.getLogger("file_hunter_agent")
 
 
 def reconcile_directory(dirpath: str, root_path: str, expected: list[dict]) -> dict:
@@ -30,6 +33,8 @@ def reconcile_directory(dirpath: str, root_path: str, expected: list[dict]) -> d
     rel_dir = os.path.relpath(dirpath, root_path)
     if rel_dir == ".":
         rel_dir = ""
+
+    logger.info("reconcile: %s", rel_dir or "/")
 
     # Build lookup of expected files by rel_path
     expected_by_rel = {e["rel_path"]: e for e in expected}
@@ -114,6 +119,12 @@ def reconcile_directory(dirpath: str, root_path: str, expected: list[dict]) -> d
     for rel_path, (full_path, name, st) in disk_files.items():
         if rel_path not in expected_by_rel:
             new_files.append(_build_file_info(full_path, name, rel_path, rel_dir, st))
+
+    hashed = sum(1 for f in new_files + changed if f.get("hash_partial"))
+    logger.info(
+        "  %d unchanged, %d new, %d changed, %d gone, %d hashed",
+        len(unchanged), len(new_files), len(changed), len(gone), hashed,
+    )
 
     return {
         "unchanged": unchanged,
