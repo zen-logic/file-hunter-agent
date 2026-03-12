@@ -33,7 +33,9 @@ class ScanCache:
         self._db = None
 
     def open(self):
-        self._db = sqlite3.connect(_cache_path(self.location_path), check_same_thread=False)
+        self._db = sqlite3.connect(
+            _cache_path(self.location_path), check_same_thread=False
+        )
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute(
             """CREATE TABLE IF NOT EXISTS files (

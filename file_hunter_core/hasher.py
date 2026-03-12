@@ -9,7 +9,7 @@ import os
 import xxhash
 
 CHUNK_SIZE = 1024 * 1024  # 1 MB
-PARTIAL_SIZE = 4 * 1024 * 1024  # 4 MB
+PARTIAL_SIZE = 64 * 1024  # 64 KB
 
 
 def hash_file_sync(path: str) -> tuple[str, str]:
@@ -24,7 +24,7 @@ def hash_file_sync(path: str) -> tuple[str, str]:
 
 
 def hash_file_partial_sync(path: str) -> str:
-    """xxHash64 of first 4MB + last 4MB. For files <= 8MB, reads everything."""
+    """xxHash64 of first 64KB + last 64KB. For files <= 128KB, reads everything."""
     xx = xxhash.xxh64()
     file_size = os.path.getsize(path)
     with open(path, "rb") as f:
@@ -32,7 +32,7 @@ def hash_file_partial_sync(path: str) -> str:
             while chunk := f.read(CHUNK_SIZE):
                 xx.update(chunk)
         else:
-            # First 4MB
+            # First 64KB
             read = 0
             while read < PARTIAL_SIZE:
                 chunk = f.read(min(CHUNK_SIZE, PARTIAL_SIZE - read))
@@ -40,7 +40,7 @@ def hash_file_partial_sync(path: str) -> str:
                     break
                 xx.update(chunk)
                 read += len(chunk)
-            # Last 4MB
+            # Last 64KB
             f.seek(-PARTIAL_SIZE, 2)
             while chunk := f.read(CHUNK_SIZE):
                 xx.update(chunk)

@@ -171,6 +171,32 @@ async def file_hash(request: Request):
     return json_ok({"hash_fast": hash_fast, "hash_strong": hash_strong})
 
 
+async def hash_partial_batch(request: Request):
+    """Recompute hash_partial for a batch of file paths."""
+    body = await request.json()
+    paths = body.get("paths", [])
+    if not paths:
+        return json_error("paths is required.")
+
+    from file_hunter_core.hasher import hash_file_partial_sync
+
+    results = []
+    errors = []
+    for p in paths:
+        if not is_path_allowed(p):
+            errors.append({"path": p, "error": "Path not allowed"})
+            continue
+        try:
+            h = await asyncio.to_thread(hash_file_partial_sync, p)
+            results.append({"path": p, "hash_partial": h})
+        except FileNotFoundError:
+            errors.append({"path": p, "error": "File not found"})
+        except OSError as e:
+            errors.append({"path": p, "error": str(e)})
+
+    return json_ok({"results": results, "errors": errors})
+
+
 async def file_content(request: Request):
     """Serve raw file bytes with correct MIME type."""
     path = request.query_params.get("path", "")

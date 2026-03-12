@@ -123,7 +123,11 @@ def reconcile_directory(dirpath: str, root_path: str, expected: list[dict]) -> d
     hashed = sum(1 for f in new_files + changed if f.get("hash_partial"))
     logger.info(
         "  %d unchanged, %d new, %d changed, %d gone, %d hashed",
-        len(unchanged), len(new_files), len(changed), len(gone), hashed,
+        len(unchanged),
+        len(new_files),
+        len(changed),
+        len(gone),
+        hashed,
     )
 
     return {
@@ -139,9 +143,9 @@ def _build_file_info(
     full_path: str, name: str, rel_path: str, rel_dir: str, st: os.stat_result
 ) -> dict:
     """Build file metadata dict with hash_fast computed."""
-    hidden = name.startswith(".") or (rel_dir and any(
-        part.startswith(".") for part in rel_dir.split(os.sep)
-    ))
+    hidden = name.startswith(".") or (
+        rel_dir and any(part.startswith(".") for part in rel_dir.split(os.sep))
+    )
 
     type_high, type_low = classify_file(name)
 
@@ -163,9 +167,9 @@ def _build_file_info(
             st.st_birthtime if hasattr(st, "st_birthtime") else st.st_ctime,
             tz=timezone.utc,
         ).isoformat(timespec="seconds"),
-        "modified_date": datetime.fromtimestamp(
-            st.st_mtime, tz=timezone.utc
-        ).isoformat(timespec="seconds"),
+        "modified_date": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(
+            timespec="seconds"
+        ),
         "file_type_high": type_high,
         "file_type_low": type_low,
         "hidden": 1 if hidden else 0,
