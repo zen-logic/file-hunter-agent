@@ -9,10 +9,14 @@ Memory: O(files in one directory) — each directory is yielded then discarded.
 """
 
 import json
+import logging
 import os
 import stat
+import time
 from collections import deque
 from datetime import datetime, timezone
+
+logger = logging.getLogger("file_hunter_agent")
 
 
 def walk_tree(root: str, prefix: str | None = None):
@@ -22,6 +26,9 @@ def walk_tree(root: str, prefix: str | None = None):
         root: absolute path to location root
         prefix: optional subdirectory prefix (relative to root) to scope the walk
     """
+    scope = prefix or root
+    logger.info("Tree walk starting: %s", scope)
+    t0 = time.monotonic()
     start = os.path.join(root, prefix) if prefix else root
     queue = deque([start])
     total_dirs = 0
@@ -78,4 +85,12 @@ def walk_tree(root: str, prefix: str | None = None):
         for sd in sorted(subdirs):
             queue.append(sd)
 
+    elapsed = time.monotonic() - t0
+    logger.info(
+        "Tree walk complete: %s — %d dirs, %d files in %.1fs",
+        scope,
+        total_dirs,
+        total_files,
+        elapsed,
+    )
     yield json.dumps({"type": "end", "dirs": total_dirs, "files": total_files}) + "\n"
