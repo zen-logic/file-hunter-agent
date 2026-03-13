@@ -1,5 +1,8 @@
 """Tree walk endpoint — stream full metadata tree as NDJSON."""
 
+import asyncio
+import logging
+
 from starlette.concurrency import iterate_in_threadpool
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
@@ -7,6 +10,17 @@ from starlette.responses import StreamingResponse
 from file_hunter_agent.config import is_path_allowed
 from file_hunter_agent.response import json_error
 from file_hunter_core.tree import walk_tree
+
+logger = logging.getLogger("file_hunter_agent")
+
+
+async def _safe_tree_stream(path, prefix):
+    """Wrap tree walk so shutdown cancellation doesn't produce tracebacks."""
+    try:
+        async for line in iterate_in_threadpool(walk_tree(path, prefix)):
+            yield line
+    except asyncio.CancelledError:
+        logger.info("Tree walk cancelled (shutdown): %s", path)
 
 
 async def tree(request: Request):
@@ -34,6 +48,6 @@ async def tree(request: Request):
             )
 
     return StreamingResponse(
-        iterate_in_threadpool(walk_tree(path, prefix)),
+        _safe_tree_stream(path, prefix),
         media_type="application/x-ndjson",
     )
