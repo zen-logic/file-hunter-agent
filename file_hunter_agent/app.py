@@ -34,6 +34,7 @@ from file_hunter_agent.routes.upload import upload
 from file_hunter_agent.routes.disk_stats import disk_stats
 from file_hunter_agent.routes.scan import scan_start, scan_cancel
 from file_hunter_agent.routes.reconcile import reconcile
+from file_hunter_agent.routes.tree import tree
 from file_hunter_agent.routes.status import status
 
 
@@ -86,6 +87,7 @@ def create_app():
             Route("/scan", scan_start, methods=["POST"]),
             Route("/scan/cancel", scan_cancel, methods=["POST"]),
             Route("/reconcile", reconcile, methods=["POST"]),
+            Route("/tree", tree, methods=["POST"]),
             Route("/disk-stats", disk_stats, methods=["POST"]),
             Route("/status", status, methods=["GET"]),
         ],
