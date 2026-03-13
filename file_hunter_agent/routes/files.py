@@ -122,11 +122,12 @@ async def file_exists(request: Request):
 
 
 async def file_hash(request: Request):
-    """Hash a file and return xxhash64 + sha256."""
+    """Hash a file. Default: xxHash64 only. With strong=true: xxHash64 + SHA-256."""
     global _hash_count, _hash_start, _hash_last
 
     body = await request.json()
     path = body.get("path", "")
+    strong = body.get("strong", False)
     if not path:
         return json_error("path is required.")
     if not is_path_allowed(path):
@@ -137,8 +138,6 @@ async def file_hash(request: Request):
         logger.warning("Backfill hash: file not found: %s", path)
         return json_error("File not found.", status=404)
 
-    from file_hunter_core.hasher import hash_file_sync
-
     _hash_count += 1
     now = time.monotonic()
     if _hash_count == 1:
@@ -146,7 +145,6 @@ async def file_hash(request: Request):
         logger.info("Backfill hashing started")
     else:
         if now - _hash_last > 30:
-            # Gap since last request — previous batch finished, new one starting
             elapsed = _hash_last - _hash_start
             rate = (_hash_count - 1) / elapsed if elapsed > 0 else 0
             logger.info(
@@ -163,12 +161,19 @@ async def file_hash(request: Request):
     logger.info("Backfill hash #%d: %s", _hash_count, path)
 
     try:
-        hash_fast, hash_strong = await asyncio.to_thread(hash_file_sync, path)
+        if strong:
+            from file_hunter_core.hasher import hash_file_sync
+
+            hash_fast, hash_strong = await asyncio.to_thread(hash_file_sync, path)
+            return json_ok({"hash_fast": hash_fast, "hash_strong": hash_strong})
+        else:
+            from file_hunter_core.hasher import hash_fast_only_sync
+
+            hash_fast = await asyncio.to_thread(hash_fast_only_sync, path)
+            return json_ok({"hash_fast": hash_fast})
     except OSError as e:
         logger.error("Backfill hash failed: %s: %r", path, e)
         return json_error(f"Hash failed: {e}", status=500)
-
-    return json_ok({"hash_fast": hash_fast, "hash_strong": hash_strong})
 
 
 async def hash_partial_batch(request: Request):
