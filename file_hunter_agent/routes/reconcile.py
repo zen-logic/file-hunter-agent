@@ -21,11 +21,14 @@ async def reconcile(request: Request):
     path = body.get("path", "")
     root_path = body.get("root_path", "")
     expected = body.get("expected", [])
+    cursor = body.get("cursor")  # None if old server, int if paginating
 
     if not path or not root_path:
         return json_error("path and root_path are required.")
     if not is_path_allowed(path):
         return json_error("Path is not within a configured location.", status=403)
 
-    result = await asyncio.to_thread(reconcile_directory, path, root_path, expected)
+    result = await asyncio.to_thread(
+        reconcile_directory, path, root_path, expected, cursor=cursor
+    )
     return json_ok(result)

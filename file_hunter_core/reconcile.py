@@ -13,8 +13,12 @@ from file_hunter_core.hasher import hash_file_partial_sync
 
 logger = logging.getLogger("file_hunter_agent")
 
+RECONCILE_PAGE_SIZE = 2000
 
-def reconcile_directory(dirpath: str, root_path: str, expected: list[dict]) -> dict:
+
+def reconcile_directory(
+    dirpath: str, root_path: str, expected: list[dict], cursor=None
+) -> dict:
     """Compare expected catalog entries against what's on disk.
 
     Args:
@@ -22,6 +26,8 @@ def reconcile_directory(dirpath: str, root_path: str, expected: list[dict]) -> d
         root_path: location root for rel_path computation
         expected: list of dicts from the server's catalog, each with:
             rel_path, file_size, modified_date, hash_fast
+        cursor: pagination offset. None = old server (no pagination),
+            0 = first page (new server), N = continuation from offset N.
 
     Returns dict with:
         unchanged: list of rel_paths confirmed on disk matching expected
@@ -29,6 +35,9 @@ def reconcile_directory(dirpath: str, root_path: str, expected: list[dict]) -> d
         gone: list of rel_paths in expected but not on disk
         new: list of full file metadata dicts (on disk but not in expected)
         subdirs: list of subdirectory names found on disk
+        cursor: next offset (int) or None if last page (only when paginating)
+        total_new: total new file count (only when paginating)
+        total_changed: total changed file count (only when paginating)
     """
     rel_dir = os.path.relpath(dirpath, root_path)
     if rel_dir == ".":
@@ -39,8 +48,8 @@ def reconcile_directory(dirpath: str, root_path: str, expected: list[dict]) -> d
     # Build lookup of expected files by rel_path
     expected_by_rel = {e["rel_path"]: e for e in expected}
 
-    # Iterate disk
-    disk_files = {}  # rel_path -> stat result
+    # --- Phase 1: listing + comparison (fast — no hashing) ---
+    disk_files = {}  # rel_path -> (full_path, name, st)
     subdirs = []
 
     try:
@@ -91,13 +100,11 @@ def reconcile_directory(dirpath: str, root_path: str, expected: list[dict]) -> d
         rel_path = os.path.join(rel_dir, name) if rel_dir else name
         disk_files[rel_path] = (full_path, name, st)
 
-    # Compare
+    # Compare expected against disk
     unchanged = []
-    changed = []
+    changed_raw = []  # (rel_path, full_path, name, st)
     gone = []
-    new_files = []
 
-    # Check expected against disk
     for rel_path, exp in expected_by_rel.items():
         if rel_path not in disk_files:
             gone.append(rel_path)
@@ -108,41 +115,112 @@ def reconcile_directory(dirpath: str, root_path: str, expected: list[dict]) -> d
             timespec="seconds"
         )
 
-        # Compare size and mtime first
         if st.st_size == exp.get("file_size") and mtime == exp.get("modified_date"):
             unchanged.append(rel_path)
         else:
-            # Changed — build full metadata
-            changed.append(_build_file_info(full_path, name, rel_path, rel_dir, st))
+            changed_raw.append((rel_path, full_path, name, st))
 
     # Find new files (on disk but not expected)
+    new_raw = []  # (rel_path, full_path, name, st)
     for rel_path, (full_path, name, st) in disk_files.items():
         if rel_path not in expected_by_rel:
-            new_files.append(_build_file_info(full_path, name, rel_path, rel_dir, st))
+            new_raw.append((rel_path, full_path, name, st))
 
-    hashed = sum(1 for f in new_files + changed if f.get("hash_partial"))
-    logger.info(
-        "  %d unchanged, %d new, %d changed, %d gone, %d hashed",
-        len(unchanged),
-        len(new_files),
-        len(changed),
-        len(gone),
-        hashed,
+    # --- Phase 2: pagination gate ---
+    paginate = cursor is not None  # absent = old server
+
+    if not paginate:
+        # Old behavior: hash everything, return everything
+        changed = [
+            _build_file_info(full_path, name, rel_path, rel_dir, st)
+            for rel_path, full_path, name, st in changed_raw
+        ]
+        new_files = [
+            _build_file_info(full_path, name, rel_path, rel_dir, st)
+            for rel_path, full_path, name, st in new_raw
+        ]
+
+        hashed = sum(1 for f in new_files + changed if f.get("hash_partial"))
+        logger.info(
+            "  %d unchanged, %d new, %d changed, %d gone, %d hashed",
+            len(unchanged),
+            len(new_files),
+            len(changed),
+            len(gone),
+            hashed,
+        )
+
+        return {
+            "unchanged": unchanged,
+            "changed": changed,
+            "gone": gone,
+            "new": new_files,
+            "subdirs": subdirs,
+        }
+
+    # Paginated path: combine new+changed, sort for deterministic cursor
+    # Tag each item so we can split back into new vs changed after slicing
+    combined = sorted(
+        [("changed", rp, fp, n, s) for rp, fp, n, s in changed_raw]
+        + [("new", rp, fp, n, s) for rp, fp, n, s in new_raw],
+        key=lambda t: t[1],  # sort by rel_path
     )
 
+    start = cursor if cursor else 0
+    page = combined[start : start + RECONCILE_PAGE_SIZE]
+    next_cursor = (
+        (start + RECONCILE_PAGE_SIZE)
+        if (start + RECONCILE_PAGE_SIZE) < len(combined)
+        else None
+    )
+
+    # Hash ONLY this page
+    page_new = []
+    page_changed = []
+    for kind, rel_path, full_path, name, st in page:
+        info = _build_file_info(full_path, name, rel_path, rel_dir, st)
+        if kind == "new":
+            page_new.append(info)
+        else:
+            page_changed.append(info)
+
+    is_first_page = start == 0
+    hashed = sum(1 for f in page_new + page_changed if f.get("hash_partial"))
+    logger.info(
+        "  page %d-%d of %d: %d new, %d changed, %d hashed%s",
+        start,
+        start + len(page),
+        len(combined),
+        len(page_new),
+        len(page_changed),
+        hashed,
+        "" if is_first_page else " (continuation)",
+    )
+    if is_first_page:
+        logger.info(
+            "  totals: %d unchanged, %d new, %d changed, %d gone",
+            len(unchanged),
+            len(new_raw),
+            len(changed_raw),
+            len(gone),
+        )
+
     return {
-        "unchanged": unchanged,
-        "changed": changed,
-        "gone": gone,
-        "new": new_files,
-        "subdirs": subdirs,
+        "unchanged": unchanged if is_first_page else [],
+        "gone": gone if is_first_page else [],
+        "subdirs": subdirs if is_first_page else [],
+        "new": page_new,
+        "changed": page_changed,
+        "cursor": next_cursor,
+        "total_new": len(new_raw),
+        "total_changed": len(changed_raw),
     }
 
 
 def _build_file_info(
     full_path: str, name: str, rel_path: str, rel_dir: str, st: os.stat_result
 ) -> dict:
-    """Build file metadata dict with hash_fast computed."""
+    """Build file metadata dict with hash_partial computed."""
     hidden = name.startswith(".") or (
         rel_dir and any(part.startswith(".") for part in rel_dir.split(os.sep))
     )
