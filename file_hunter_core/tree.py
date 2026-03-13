@@ -29,6 +29,7 @@ def walk_tree(root: str, prefix: str | None = None):
     scope = prefix or root
     logger.info("Tree walk starting: %s", scope)
     t0 = time.monotonic()
+    last_log = t0
     start = os.path.join(root, prefix) if prefix else root
     queue = deque([start])
     total_dirs = 0
@@ -43,6 +44,17 @@ def walk_tree(root: str, prefix: str | None = None):
 
         yield json.dumps({"type": "dir", "rel_dir": rel_dir}) + "\n"
         total_dirs += 1
+
+        now = time.monotonic()
+        if now - last_log >= 5.0:
+            logger.info(
+                "Tree walk progress: %s — %d dirs, %d files so far (%.1fs)",
+                scope,
+                total_dirs,
+                total_files,
+                now - t0,
+            )
+            last_log = now
 
         try:
             entries = list(os.scandir(dirpath))
