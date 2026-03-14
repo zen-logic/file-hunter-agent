@@ -51,6 +51,9 @@ async def on_startup():
 
 
 async def on_shutdown():
+    from file_hunter_agent import client
+
+    client._shutting_down = True
     if _ws_task and not _ws_task.done():
         _ws_task.cancel()
         try:

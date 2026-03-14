@@ -22,6 +22,7 @@ _send_queue: asyncio.Queue = asyncio.Queue()
 # Connection state
 _ws = None
 _connected = False
+_shutting_down = False
 
 
 async def send_message(msg: dict):
@@ -109,8 +110,15 @@ async def run_client():
             _ws = None
             _connected = False
 
+        if _shutting_down:
+            logger.info("WebSocket client shutting down")
+            return
         logger.info("Reconnecting in 5 seconds...")
-        await asyncio.sleep(5)
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            logger.info("WebSocket client shutting down")
+            return
 
 
 async def _receive_loop(ws):
