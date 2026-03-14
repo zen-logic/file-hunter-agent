@@ -22,6 +22,7 @@ from file_hunter_agent.routes.files import (
     file_exists,
     file_hash,
     hash_partial_batch,
+    hash_fast_batch,
     stream_write,
 )
 from file_hunter_agent.routes.folders import (
@@ -81,6 +82,7 @@ def create_app():
             Route("/files/exists", file_exists, methods=["POST"]),
             Route("/files/hash", file_hash, methods=["POST"]),
             Route("/files/hash-partial-batch", hash_partial_batch, methods=["POST"]),
+            Route("/files/hash-batch", hash_fast_batch, methods=["POST"]),
             Route("/files/stream-write", stream_write, methods=["POST"]),
             Route("/folders/create", folder_create, methods=["POST"]),
             Route("/folders/delete", folder_delete, methods=["POST"]),
