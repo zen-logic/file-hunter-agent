@@ -177,7 +177,7 @@ async def file_hash(request: Request):
 
 
 async def hash_partial_batch(request: Request):
-    """Recompute hash_partial for a batch of file paths."""
+    """Compute hash_partial for a batch of file paths, sorted by inode for disk locality."""
     body = await request.json()
     paths = body.get("paths", [])
     if not paths:
@@ -185,20 +185,42 @@ async def hash_partial_batch(request: Request):
 
     from file_hunter_core.hasher import hash_file_partial_sync
 
-    results = []
-    errors = []
-    for p in paths:
-        if not is_path_allowed(p):
-            errors.append({"path": p, "error": "Path not allowed"})
-            continue
-        try:
-            h = await asyncio.to_thread(hash_file_partial_sync, p)
-            results.append({"path": p, "hash_partial": h})
-        except FileNotFoundError:
-            errors.append({"path": p, "error": "File not found"})
-        except OSError as e:
-            errors.append({"path": p, "error": str(e)})
+    def _hash_batch_sync(file_paths):
+        """Sort by inode then hash sequentially — minimises disk seeks."""
+        import os
 
+        # Get inodes for sorting
+        inode_paths = []
+        not_allowed = []
+        for p in file_paths:
+            if not is_path_allowed(p):
+                not_allowed.append({"path": p, "error": "Path not allowed"})
+                continue
+            try:
+                ino = os.stat(p).st_ino
+                inode_paths.append((ino, p))
+            except FileNotFoundError:
+                not_allowed.append({"path": p, "error": "File not found"})
+            except OSError as e:
+                not_allowed.append({"path": p, "error": str(e)})
+
+        # Sort by inode for sequential disk access
+        inode_paths.sort(key=lambda x: x[0])
+
+        results = []
+        errors = list(not_allowed)
+        for _ino, p in inode_paths:
+            try:
+                h = hash_file_partial_sync(p)
+                results.append({"path": p, "hash_partial": h})
+            except FileNotFoundError:
+                errors.append({"path": p, "error": "File not found"})
+            except OSError as e:
+                errors.append({"path": p, "error": str(e)})
+
+        return results, errors
+
+    results, errors = await asyncio.to_thread(_hash_batch_sync, paths)
     return json_ok({"results": results, "errors": errors})
 
 
