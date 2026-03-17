@@ -229,7 +229,7 @@ def _build_file_info(
 
     # Compute hash_partial for non-hidden, non-zero files
     hash_partial = None
-    if not hidden and st.st_size > 0:
+    if st.st_size > 0:
         try:
             hash_partial = hash_file_partial_sync(full_path)
         except OSError:
