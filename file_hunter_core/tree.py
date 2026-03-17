@@ -29,7 +29,7 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
 
     TSV format (tabs in filenames converted to spaces):
         D\\trel_dir\\n
-        F\\trel_path\\tsize\\tmtime\\n
+        F\\trel_path\\tsize\\tmtime\\tctime\\n
         E\\tdirs\\tfiles\\n
     """
     use_tsv = fmt == "tsv"
@@ -90,9 +90,13 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
             mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(
                 timespec="seconds"
             )
+            ctime = datetime.fromtimestamp(
+                st.st_birthtime if hasattr(st, "st_birthtime") else st.st_ctime,
+                tz=timezone.utc,
+            ).isoformat(timespec="seconds")
 
             if use_tsv:
-                yield f"F\t{rel_path.replace(chr(9), ' ')}\t{st.st_size}\t{mtime}\n"
+                yield f"F\t{rel_path.replace(chr(9), ' ')}\t{st.st_size}\t{mtime}\t{ctime}\n"
             else:
                 yield (
                     json.dumps(
@@ -101,6 +105,7 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
                             "rel_path": rel_path,
                             "size": st.st_size,
                             "mtime": mtime,
+                            "ctime": ctime,
                         }
                     )
                     + "\n"
