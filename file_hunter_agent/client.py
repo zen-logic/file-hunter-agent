@@ -73,6 +73,7 @@ async def run_client():
                             "locations": config.get_locations_with_status(),
                             "scanning": scanner.is_scanning(),
                             "scanPath": scanner.get_current_path(),
+                            "capabilities": ["tsv_tree"],
                         }
                     )
                 )

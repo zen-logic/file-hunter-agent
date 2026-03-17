@@ -19,15 +19,22 @@ from datetime import datetime, timezone
 logger = logging.getLogger("file_hunter_agent")
 
 
-def walk_tree(root: str, prefix: str | None = None):
-    """BFS generator yielding NDJSON lines for every dir and file.
+def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
+    """BFS generator yielding lines for every dir and file.
 
     Args:
         root: absolute path to location root
         prefix: optional subdirectory prefix (relative to root) to scope the walk
+        fmt: "json" for NDJSON (default), "tsv" for tab-separated values
+
+    TSV format (tabs in filenames converted to spaces):
+        D\\trel_dir\\n
+        F\\trel_path\\tsize\\tmtime\\n
+        E\\tdirs\\tfiles\\n
     """
+    use_tsv = fmt == "tsv"
     scope = prefix or root
-    logger.info("Tree walk starting: %s", scope)
+    logger.info("Tree walk starting: %s (format=%s)", scope, fmt)
     t0 = time.monotonic()
     last_log = t0
     start = os.path.join(root, prefix) if prefix else root
@@ -42,7 +49,10 @@ def walk_tree(root: str, prefix: str | None = None):
         if rel_dir == ".":
             rel_dir = ""
 
-        yield json.dumps({"type": "dir", "rel_dir": rel_dir}) + "\n"
+        if use_tsv:
+            yield f"D\t{rel_dir.replace(chr(9), ' ')}\n"
+        else:
+            yield json.dumps({"type": "dir", "rel_dir": rel_dir}) + "\n"
         total_dirs += 1
 
         now = time.monotonic()
@@ -81,17 +91,20 @@ def walk_tree(root: str, prefix: str | None = None):
                 timespec="seconds"
             )
 
-            yield (
-                json.dumps(
-                    {
-                        "type": "file",
-                        "rel_path": rel_path,
-                        "size": st.st_size,
-                        "mtime": mtime,
-                    }
+            if use_tsv:
+                yield f"F\t{rel_path.replace(chr(9), ' ')}\t{st.st_size}\t{mtime}\n"
+            else:
+                yield (
+                    json.dumps(
+                        {
+                            "type": "file",
+                            "rel_path": rel_path,
+                            "size": st.st_size,
+                            "mtime": mtime,
+                        }
+                    )
+                    + "\n"
                 )
-                + "\n"
-            )
             total_files += 1
 
         for sd in sorted(subdirs):
@@ -105,4 +118,9 @@ def walk_tree(root: str, prefix: str | None = None):
         total_files,
         elapsed,
     )
-    yield json.dumps({"type": "end", "dirs": total_dirs, "files": total_files}) + "\n"
+    if use_tsv:
+        yield f"E\t{total_dirs}\t{total_files}\n"
+    else:
+        yield (
+            json.dumps({"type": "end", "dirs": total_dirs, "files": total_files}) + "\n"
+        )
