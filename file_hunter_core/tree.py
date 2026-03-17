@@ -19,8 +19,14 @@ from datetime import datetime, timezone
 logger = logging.getLogger("file_hunter_agent")
 
 
+STREAM_CHUNK_SIZE = 1000  # lines per HTTP chunk
+
+
 def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
-    """BFS generator yielding lines for every dir and file.
+    """BFS generator yielding batched lines for every dir and file.
+
+    Accumulates lines into chunks of STREAM_CHUNK_SIZE before yielding
+    to reduce HTTP/thread-boundary overhead.
 
     Args:
         root: absolute path to location root
@@ -41,6 +47,7 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
     queue = deque([start])
     total_dirs = 0
     total_files = 0
+    buf: list[str] = []
 
     while queue:
         dirpath = queue.popleft()
@@ -50,9 +57,9 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
             rel_dir = ""
 
         if use_tsv:
-            yield f"D\t{rel_dir.replace(chr(9), ' ')}\n"
+            buf.append(f"D\t{rel_dir.replace(chr(9), ' ')}\n")
         else:
-            yield json.dumps({"type": "dir", "rel_dir": rel_dir}) + "\n"
+            buf.append(json.dumps({"type": "dir", "rel_dir": rel_dir}) + "\n")
         total_dirs += 1
 
         now = time.monotonic()
@@ -96,9 +103,11 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
             ).isoformat(timespec="seconds")
 
             if use_tsv:
-                yield f"F\t{rel_path.replace(chr(9), ' ')}\t{st.st_size}\t{mtime}\t{ctime}\n"
+                buf.append(
+                    f"F\t{rel_path.replace(chr(9), ' ')}\t{st.st_size}\t{mtime}\t{ctime}\n"
+                )
             else:
-                yield (
+                buf.append(
                     json.dumps(
                         {
                             "type": "file",
@@ -112,6 +121,10 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
                 )
             total_files += 1
 
+            if len(buf) >= STREAM_CHUNK_SIZE:
+                yield "".join(buf)
+                buf.clear()
+
         for sd in sorted(subdirs):
             queue.append(sd)
 
@@ -124,8 +137,10 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
         elapsed,
     )
     if use_tsv:
-        yield f"E\t{total_dirs}\t{total_files}\n"
+        buf.append(f"E\t{total_dirs}\t{total_files}\n")
     else:
-        yield (
+        buf.append(
             json.dumps({"type": "end", "dirs": total_dirs, "files": total_files}) + "\n"
         )
+    if buf:
+        yield "".join(buf)
