@@ -32,6 +32,48 @@ def hash_fast_only_sync(path: str) -> str:
     return xx.hexdigest()
 
 
+def hash_partial_and_fast_sync(path: str) -> tuple[str, str]:
+    """Read file once, return (hash_partial, hash_fast).
+
+    hash_partial: xxHash64 of first 64KB + last 64KB
+    hash_fast: xxHash64 of the full file
+
+    For files <= 128KB both hashes are identical (full file is read either way).
+    Single sequential read — no extra I/O.
+    """
+    file_size = os.path.getsize(path)
+    xx_fast = xxhash.xxh64()
+
+    if file_size <= PARTIAL_SIZE * 2:
+        # Small file — full read, both hashes are the same
+        with open(path, "rb") as f:
+            while chunk := f.read(CHUNK_SIZE):
+                xx_fast.update(chunk)
+        h = xx_fast.hexdigest()
+        return h, h
+
+    # Large file — read full file for hash_fast, track first/last for hash_partial
+    first_buf = bytearray()
+    last_buf = bytearray()
+
+    with open(path, "rb") as f:
+        while chunk := f.read(CHUNK_SIZE):
+            xx_fast.update(chunk)
+            if len(first_buf) < PARTIAL_SIZE:
+                need = PARTIAL_SIZE - len(first_buf)
+                first_buf.extend(chunk[:need])
+            # Maintain a rolling buffer of the last PARTIAL_SIZE bytes
+            last_buf.extend(chunk)
+            if len(last_buf) > PARTIAL_SIZE:
+                last_buf = last_buf[-PARTIAL_SIZE:]
+
+    xx_partial = xxhash.xxh64()
+    xx_partial.update(bytes(first_buf))
+    xx_partial.update(bytes(last_buf))
+
+    return xx_partial.hexdigest(), xx_fast.hexdigest()
+
+
 def hash_file_partial_sync(path: str) -> str:
     """xxHash64 of first 64KB + last 64KB. For files <= 128KB, reads everything."""
     xx = xxhash.xxh64()
