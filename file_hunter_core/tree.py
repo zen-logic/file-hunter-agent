@@ -1,14 +1,21 @@
-"""Full metadata tree walk — streams directory-at-a-time over HTTP.
+"""Two-phase tree walk — metadata first, then hashes in inode order.
 
-Synchronous BFS generator. Each yield is one complete directory:
-  D record, then all F records (inode-sorted), ready for server ingest.
+Synchronous BFS generator streaming TSV over a single HTTP response.
+
+Phase 1 (metadata): streams D and F records as directories are discovered.
+  Fast — stat only, no file reads. Server can ingest immediately.
+
+Phase 2 (hashing): streams H records for all files sorted by inode.
+  Reads first+last 64KB per file. Inode order minimises disk seeks.
 
 TSV format (tabs in filenames converted to spaces):
     D\trel_dir\n
-    F\trel_path\tsize\tmtime\tctime\tinode\thash_partial\n
+    F\trel_path\tsize\tmtime\tctime\tinode\n
+    P\thashing\ttotal_files\n
+    H\trel_path\thash_partial\n
     E\ttotal_dirs\ttotal_files\n
 
-Memory: O(files in one directory) — each directory is yielded then discarded.
+Memory: O(total files) — all file paths retained for hash phase.
 """
 
 import logging
@@ -24,15 +31,12 @@ logger = logging.getLogger("file_hunter_agent")
 
 
 def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv"):
-    """BFS generator yielding one chunk per directory.
-
-    Each chunk contains the D record followed by all F records for that
-    directory, sorted by inode for disk locality when hashing.
+    """BFS generator: metadata phase then hash phase.
 
     Args:
         root: absolute path to location root
         prefix: optional subdirectory prefix (relative to root) to scope the walk
-        fmt: "tsv" (default). Legacy "json" is no longer supported.
+        fmt: "tsv" (default). Only supported format.
     """
     if fmt != "tsv":
         raise ValueError(f"Unsupported format: {fmt!r} (only 'tsv' is supported)")
@@ -46,6 +50,10 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv"):
     total_dirs = 0
     total_files = 0
 
+    # Collect all files for hash phase
+    all_files: list[tuple[int, str, str, int]] = []  # (inode, full_path, rel_path, size)
+
+    # --- Phase 1: metadata ---
     while queue:
         dirpath = queue.popleft()
 
@@ -56,7 +64,7 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv"):
         now = time.monotonic()
         if now - last_log >= 5.0:
             logger.info(
-                "Tree walk progress: %s — %d dirs, %d files so far (%.1fs)",
+                "Tree walk metadata: %s — %d dirs, %d files so far (%.1fs)",
                 scope,
                 total_dirs,
                 total_files,
@@ -70,7 +78,7 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv"):
             continue
 
         subdirs = []
-        file_entries = []
+        dir_files: list[tuple[int, str, str, int, str, str]] = []
 
         for entry in entries:
             try:
@@ -95,42 +103,90 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv"):
                 tz=timezone.utc,
             ).isoformat(timespec="seconds")
 
-            file_entries.append(
+            dir_files.append(
                 (st.st_ino, entry.path, rel_path, st.st_size, mtime, ctime)
             )
 
-        # Sort by inode for disk locality when hashing
-        file_entries.sort(key=lambda e: e[0])
-
-        # Build the chunk: D record + F records for this directory
+        # Build chunk: D record + F records (no hashes)
         lines = [f"D\t{rel_dir.replace(chr(9), ' ')}\n"]
 
-        for ino, full_path, rel_path, size, mtime, ctime in file_entries:
-            # Hash partial: skip zero-byte files
-            hp = ""
-            if size > 0:
-                try:
-                    hp = hash_file_partial_sync(full_path)
-                except (OSError, PermissionError):
-                    pass
-
+        for ino, full_path, rel_path, size, mtime, ctime in dir_files:
             safe_rel = rel_path.replace(chr(9), " ")
-            lines.append(f"F\t{safe_rel}\t{size}\t{mtime}\t{ctime}\t{ino}\t{hp}\n")
+            lines.append(f"F\t{safe_rel}\t{size}\t{mtime}\t{ctime}\t{ino}\n")
+            # Collect for hash phase (skip zero-byte)
+            if size > 0:
+                all_files.append((ino, full_path, rel_path, size))
 
         total_dirs += 1
-        total_files += len(file_entries)
+        total_files += len(dir_files)
 
         yield "".join(lines)
 
         for sd in sorted(subdirs):
             queue.append(sd)
 
-    elapsed = time.monotonic() - t0
+    walk_elapsed = time.monotonic() - t0
     logger.info(
-        "Tree walk complete: %s — %d dirs, %d files in %.1fs",
+        "Tree walk metadata complete: %s — %d dirs, %d files in %.1fs",
         scope,
         total_dirs,
         total_files,
-        elapsed,
+        walk_elapsed,
+    )
+
+    # --- Phase 2: hash partials in inode order ---
+    all_files.sort(key=lambda e: e[0])
+    hashable = len(all_files)
+    logger.info("Tree hash phase: %d files to hash (inode-sorted)", hashable)
+
+    yield f"P\thashing\t{hashable}\n"
+
+    hash_t0 = time.monotonic()
+    last_log = hash_t0
+    hashed = 0
+    buf: list[str] = []
+
+    for ino, full_path, rel_path, size in all_files:
+        try:
+            hp = hash_file_partial_sync(full_path)
+        except (OSError, PermissionError):
+            continue
+
+        safe_rel = rel_path.replace(chr(9), " ")
+        buf.append(f"H\t{safe_rel}\t{hp}\n")
+        hashed += 1
+
+        # Flush in batches to reduce HTTP chunk overhead
+        if len(buf) >= 500:
+            yield "".join(buf)
+            buf.clear()
+
+        now = time.monotonic()
+        if now - last_log >= 5.0:
+            rate = hashed / (now - hash_t0) if (now - hash_t0) > 0 else 0
+            logger.info(
+                "Tree hash progress: %s — %d / %d hashed (%.0f/sec, %.1fs)",
+                scope,
+                hashed,
+                hashable,
+                rate,
+                now - hash_t0,
+            )
+            last_log = now
+
+    if buf:
+        yield "".join(buf)
+
+    hash_elapsed = time.monotonic() - hash_t0
+    total_elapsed = time.monotonic() - t0
+    logger.info(
+        "Tree walk complete: %s — %d dirs, %d files, %d hashed in %.1fs (walk %.1fs, hash %.1fs)",
+        scope,
+        total_dirs,
+        total_files,
+        hashed,
+        total_elapsed,
+        walk_elapsed,
+        hash_elapsed,
     )
     yield f"E\t{total_dirs}\t{total_files}\n"
