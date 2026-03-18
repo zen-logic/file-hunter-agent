@@ -1,4 +1,4 @@
-"""Tree walk endpoint — stream full metadata tree as NDJSON."""
+"""Tree walk endpoint — stream metadata + partial hashes as TSV."""
 
 import asyncio
 import logging
@@ -14,11 +14,11 @@ from file_hunter_core.tree import walk_tree
 logger = logging.getLogger("file_hunter_agent")
 
 
-async def _safe_tree_stream(path, prefix, fmt="json"):
+async def _safe_tree_stream(path, prefix):
     """Wrap tree walk so shutdown cancellation doesn't produce tracebacks."""
     try:
-        async for line in iterate_in_threadpool(walk_tree(path, prefix, fmt=fmt)):
-            yield line
+        async for chunk in iterate_in_threadpool(walk_tree(path, prefix)):
+            yield chunk
     except asyncio.CancelledError:
         logger.info("Tree walk cancelled (shutdown): %s", path)
 
@@ -29,12 +29,13 @@ async def tree(request: Request):
     POST body:
         path: absolute path to location root
         prefix: optional relative subdirectory to scope the walk
-        format: "json" (default) or "tsv"
+
+    Each yielded chunk is one complete directory: D record followed by
+    all F records (inode-sorted with partial hashes).
     """
     body = await request.json()
     path = body.get("path", "")
     prefix = body.get("prefix") or None
-    fmt = body.get("format", "json")
 
     if not path:
         return json_error("path is required.")
@@ -49,8 +50,7 @@ async def tree(request: Request):
                 "Prefix path is not within a configured location.", status=403
             )
 
-    media = "text/tab-separated-values" if fmt == "tsv" else "application/x-ndjson"
     return StreamingResponse(
-        _safe_tree_stream(path, prefix, fmt=fmt),
-        media_type=media,
+        _safe_tree_stream(path, prefix),
+        media_type="text/tab-separated-values",
     )

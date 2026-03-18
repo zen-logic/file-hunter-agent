@@ -1,14 +1,16 @@
-"""Full metadata tree walk — streams NDJSON for server-side diffing.
+"""Full metadata tree walk — streams directory-at-a-time over HTTP.
 
-Synchronous BFS generator. Yields one JSON line per record:
-  - {"type":"dir","rel_dir":"..."}
-  - {"type":"file","rel_path":"...","size":...,"mtime":"..."}
-  - {"type":"end","dirs":...,"files":...}
+Synchronous BFS generator. Each yield is one complete directory:
+  D record, then all F records (inode-sorted), ready for server ingest.
+
+TSV format (tabs in filenames converted to spaces):
+    D\trel_dir\n
+    F\trel_path\tsize\tmtime\tctime\tinode\thash_partial\n
+    E\ttotal_dirs\ttotal_files\n
 
 Memory: O(files in one directory) — each directory is yielded then discarded.
 """
 
-import json
 import logging
 import os
 import stat
@@ -16,38 +18,33 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 
+from file_hunter_core.hasher import hash_file_partial_sync
+
 logger = logging.getLogger("file_hunter_agent")
 
 
-STREAM_CHUNK_SIZE = 1000  # lines per HTTP chunk
+def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv"):
+    """BFS generator yielding one chunk per directory.
 
-
-def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
-    """BFS generator yielding batched lines for every dir and file.
-
-    Accumulates lines into chunks of STREAM_CHUNK_SIZE before yielding
-    to reduce HTTP/thread-boundary overhead.
+    Each chunk contains the D record followed by all F records for that
+    directory, sorted by inode for disk locality when hashing.
 
     Args:
         root: absolute path to location root
         prefix: optional subdirectory prefix (relative to root) to scope the walk
-        fmt: "json" for NDJSON (default), "tsv" for tab-separated values
-
-    TSV format (tabs in filenames converted to spaces):
-        D\\trel_dir\\n
-        F\\trel_path\\tsize\\tmtime\\tctime\\n
-        E\\tdirs\\tfiles\\n
+        fmt: "tsv" (default). Legacy "json" is no longer supported.
     """
-    use_tsv = fmt == "tsv"
+    if fmt != "tsv":
+        raise ValueError(f"Unsupported format: {fmt!r} (only 'tsv' is supported)")
+
     scope = prefix or root
-    logger.info("Tree walk starting: %s (format=%s)", scope, fmt)
+    logger.info("Tree walk starting: %s", scope)
     t0 = time.monotonic()
     last_log = t0
     start = os.path.join(root, prefix) if prefix else root
     queue = deque([start])
     total_dirs = 0
     total_files = 0
-    buf: list[str] = []
 
     while queue:
         dirpath = queue.popleft()
@@ -55,12 +52,6 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
         rel_dir = os.path.relpath(dirpath, root)
         if rel_dir == ".":
             rel_dir = ""
-
-        if use_tsv:
-            buf.append(f"D\t{rel_dir.replace(chr(9), ' ')}\n")
-        else:
-            buf.append(json.dumps({"type": "dir", "rel_dir": rel_dir}) + "\n")
-        total_dirs += 1
 
         now = time.monotonic()
         if now - last_log >= 5.0:
@@ -79,6 +70,8 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
             continue
 
         subdirs = []
+        file_entries = []
+
         for entry in entries:
             try:
                 if entry.is_symlink():
@@ -102,28 +95,32 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
                 tz=timezone.utc,
             ).isoformat(timespec="seconds")
 
-            if use_tsv:
-                buf.append(
-                    f"F\t{rel_path.replace(chr(9), ' ')}\t{st.st_size}\t{mtime}\t{ctime}\n"
-                )
-            else:
-                buf.append(
-                    json.dumps(
-                        {
-                            "type": "file",
-                            "rel_path": rel_path,
-                            "size": st.st_size,
-                            "mtime": mtime,
-                            "ctime": ctime,
-                        }
-                    )
-                    + "\n"
-                )
-            total_files += 1
+            file_entries.append(
+                (st.st_ino, entry.path, rel_path, st.st_size, mtime, ctime)
+            )
 
-            if len(buf) >= STREAM_CHUNK_SIZE:
-                yield "".join(buf)
-                buf.clear()
+        # Sort by inode for disk locality when hashing
+        file_entries.sort(key=lambda e: e[0])
+
+        # Build the chunk: D record + F records for this directory
+        lines = [f"D\t{rel_dir.replace(chr(9), ' ')}\n"]
+
+        for ino, full_path, rel_path, size, mtime, ctime in file_entries:
+            # Hash partial: skip zero-byte files
+            hp = ""
+            if size > 0:
+                try:
+                    hp = hash_file_partial_sync(full_path)
+                except (OSError, PermissionError):
+                    pass
+
+            safe_rel = rel_path.replace(chr(9), " ")
+            lines.append(f"F\t{safe_rel}\t{size}\t{mtime}\t{ctime}\t{ino}\t{hp}\n")
+
+        total_dirs += 1
+        total_files += len(file_entries)
+
+        yield "".join(lines)
 
         for sd in sorted(subdirs):
             queue.append(sd)
@@ -136,11 +133,4 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "json"):
         total_files,
         elapsed,
     )
-    if use_tsv:
-        buf.append(f"E\t{total_dirs}\t{total_files}\n")
-    else:
-        buf.append(
-            json.dumps({"type": "end", "dirs": total_dirs, "files": total_files}) + "\n"
-        )
-    if buf:
-        yield "".join(buf)
+    yield f"E\t{total_dirs}\t{total_files}\n"
