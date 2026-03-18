@@ -187,6 +187,7 @@ def _inode_sorted_hash_batch(file_paths, hash_fn, result_key):
     Returns (results, errors) tuple.
     """
     import os
+    import time
 
     inode_paths = []
     errors = []
@@ -204,6 +205,11 @@ def _inode_sorted_hash_batch(file_paths, hash_fn, result_key):
 
     inode_paths.sort(key=lambda x: x[0])
 
+    total = len(inode_paths)
+    logger.info("Hash batch: %d files to %s (inode-sorted)", total, result_key)
+    t0 = time.monotonic()
+    last_log = t0
+
     results = []
     for _ino, p in inode_paths:
         try:
@@ -214,6 +220,26 @@ def _inode_sorted_hash_batch(file_paths, hash_fn, result_key):
         except OSError as e:
             errors.append({"path": p, "error": str(e)})
 
+        now = time.monotonic()
+        if now - last_log >= 5.0:
+            done = len(results) + len(errors)
+            rate = done / (now - t0) if (now - t0) > 0 else 0
+            logger.info(
+                "Hash batch: %d / %d %s (%.0f files/sec)",
+                done,
+                total,
+                result_key,
+                rate,
+            )
+            last_log = now
+
+    elapsed = time.monotonic() - t0
+    logger.info(
+        "Hash batch complete: %d hashed, %d errors in %.1fs",
+        len(results),
+        len(errors),
+        elapsed,
+    )
     return results, errors
 
 
