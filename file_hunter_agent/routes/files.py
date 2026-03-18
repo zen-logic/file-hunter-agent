@@ -212,7 +212,9 @@ def _inode_sorted_hash_batch(file_paths, hash_fn, result_key):
 
     results = []
     for _ino, p in inode_paths:
+        file_t = time.monotonic()
         try:
+            file_size = os.path.getsize(p)
             h = hash_fn(p)
             results.append({"path": p, result_key: h})
         except FileNotFoundError:
@@ -220,17 +222,31 @@ def _inode_sorted_hash_batch(file_paths, hash_fn, result_key):
         except OSError as e:
             errors.append({"path": p, "error": str(e)})
 
+        elapsed_file = time.monotonic() - file_t
         now = time.monotonic()
-        if now - last_log >= 5.0:
+        if elapsed_file >= 5.0 or now - last_log >= 5.0:
             done = len(results) + len(errors)
             rate = done / (now - t0) if (now - t0) > 0 else 0
-            logger.info(
-                "Hash batch: %d / %d %s (%.0f files/sec)",
-                done,
-                total,
-                result_key,
-                rate,
-            )
+            if elapsed_file >= 5.0:
+                size_mb = file_size / (1024 * 1024) if file_size else 0
+                logger.info(
+                    "Hash batch: %d / %d %s (%.0f/sec) — slow file: %.0fMB %.1fs %s",
+                    done,
+                    total,
+                    result_key,
+                    rate,
+                    size_mb,
+                    elapsed_file,
+                    os.path.basename(p),
+                )
+            else:
+                logger.info(
+                    "Hash batch: %d / %d %s (%.0f files/sec)",
+                    done,
+                    total,
+                    result_key,
+                    rate,
+                )
             last_log = now
 
     elapsed = time.monotonic() - t0
