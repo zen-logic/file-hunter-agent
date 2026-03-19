@@ -103,8 +103,13 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv"):
                 tz=timezone.utc,
             ).isoformat(timespec="seconds")
 
+            # Reinterpret as signed 64-bit for SQLite compatibility —
+            # lossless, preserves sort order within a filesystem
+            ino = st.st_ino
+            if ino >= 2**63:
+                ino -= 2**64
             dir_files.append(
-                (st.st_ino, entry.path, rel_path, st.st_size, mtime, ctime)
+                (ino, entry.path, rel_path, st.st_size, mtime, ctime)
             )
 
         # Build chunk: D record + F records (no hashes)
