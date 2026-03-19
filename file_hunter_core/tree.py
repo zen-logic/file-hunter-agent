@@ -142,6 +142,7 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv"):
     yield f"P\thashing\t{hashable}\n"
 
     hash_t0 = time.monotonic()
+    last_flush = hash_t0
     last_log = hash_t0
     hashed = 0
     buf: list[str] = []
@@ -156,12 +157,14 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv"):
         buf.append(f"H\t{safe_rel}\t{hp}\n")
         hashed += 1
 
-        # Flush in batches to reduce HTTP chunk overhead
-        if len(buf) >= 500:
+        now = time.monotonic()
+
+        # Flush on time interval — gives accurate counts to server
+        if now - last_flush >= 5.0:
             yield "".join(buf)
             buf.clear()
+            last_flush = now
 
-        now = time.monotonic()
         if now - last_log >= 5.0:
             rate = hashed / (now - hash_t0) if (now - hash_t0) > 0 else 0
             logger.info(
