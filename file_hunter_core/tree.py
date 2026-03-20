@@ -30,13 +30,15 @@ from file_hunter_core.hasher import hash_file_partial_sync
 logger = logging.getLogger("file_hunter_agent")
 
 
-def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv"):
+def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv",
+              metadata_only: bool = False):
     """BFS generator: metadata phase then hash phase.
 
     Args:
         root: absolute path to location root
         prefix: optional subdirectory prefix (relative to root) to scope the walk
         fmt: "tsv" (default). Only supported format.
+        metadata_only: if True, skip the hash phase (for rescan diff).
     """
     if fmt != "tsv":
         raise ValueError(f"Unsupported format: {fmt!r} (only 'tsv' is supported)")
@@ -138,6 +140,11 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv"):
         total_files,
         walk_elapsed,
     )
+
+    if metadata_only:
+        logger.info("Tree walk: metadata_only — skipping hash phase")
+        yield f"E\t{total_dirs}\t{total_files}\n"
+        return
 
     # --- Phase 2: hash partials in inode order ---
     all_files.sort(key=lambda e: e[0])

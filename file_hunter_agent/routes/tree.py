@@ -14,10 +14,12 @@ from file_hunter_core.tree import walk_tree
 logger = logging.getLogger("file_hunter_agent")
 
 
-async def _safe_tree_stream(path, prefix):
+async def _safe_tree_stream(path, prefix, metadata_only=False):
     """Wrap tree walk so shutdown cancellation doesn't produce tracebacks."""
     try:
-        async for chunk in iterate_in_threadpool(walk_tree(path, prefix)):
+        async for chunk in iterate_in_threadpool(
+            walk_tree(path, prefix, metadata_only=metadata_only)
+        ):
             yield chunk
     except asyncio.CancelledError:
         logger.info("Tree walk cancelled (shutdown): %s", path)
@@ -29,6 +31,7 @@ async def tree(request: Request):
     POST body:
         path: absolute path to location root
         prefix: optional relative subdirectory to scope the walk
+        metadata_only: if true, skip hash phase (for rescan diff)
 
     Each yielded chunk is one complete directory: D record followed by
     all F records (inode-sorted with partial hashes).
@@ -36,6 +39,7 @@ async def tree(request: Request):
     body = await request.json()
     path = body.get("path", "")
     prefix = body.get("prefix") or None
+    metadata_only = bool(body.get("metadata_only", False))
 
     if not path:
         return json_error("path is required.")
@@ -51,6 +55,6 @@ async def tree(request: Request):
             )
 
     return StreamingResponse(
-        _safe_tree_stream(path, prefix),
+        _safe_tree_stream(path, prefix, metadata_only=metadata_only),
         media_type="text/tab-separated-values",
     )
