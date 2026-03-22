@@ -1,9 +1,23 @@
 """Starlette HTTP app assembly for the agent."""
 
 import asyncio
+import logging
 
 from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.routing import Route
+
+logger = logging.getLogger(__name__)
+
+
+async def _handle_error(request: Request, exc: Exception) -> JSONResponse:
+    """Global handler — turn unhandled exceptions into JSON error responses."""
+    logger.error("Unhandled error on %s: %s", request.url.path, exc)
+    return JSONResponse(
+        {"ok": False, "error": str(exc)},
+        status_code=500,
+    )
 
 from file_hunter_agent import config
 from file_hunter_agent.auth import AgentAuthMiddleware
@@ -68,6 +82,7 @@ def create_app():
     app = Starlette(
         on_startup=[on_startup],
         on_shutdown=[on_shutdown],
+        exception_handlers={500: _handle_error},
         routes=[
             Route("/browse", browse, methods=["GET"]),
             Route("/browse-system", browse_system, methods=["GET"]),
