@@ -79,9 +79,16 @@ async def on_shutdown():
 
 def create_app():
     """Create and return the ASGI app with auth middleware."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app):
+        await on_startup()
+        yield
+        await on_shutdown()
+
     app = Starlette(
-        on_startup=[on_startup],
-        on_shutdown=[on_shutdown],
+        lifespan=lifespan,
         exception_handlers={500: _handle_error},
         routes=[
             Route("/browse", browse, methods=["GET"]),
