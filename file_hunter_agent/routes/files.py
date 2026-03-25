@@ -338,6 +338,12 @@ async def stream_write(request: Request):
             f.write(chunk)
             total += len(chunk)
 
+    # Restore original modified time if provided
+    mtime = request.query_params.get("mtime")
+    if mtime:
+        t = float(mtime)
+        await asyncio.to_thread(os.utime, path, (t, t))
+
     return json_ok({"written": path, "size": total})
 
 
