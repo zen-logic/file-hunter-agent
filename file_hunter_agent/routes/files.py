@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import os
 import shutil
+import threading
 import time
 
 from starlette.requests import Request
@@ -12,6 +13,9 @@ from starlette.responses import FileResponse
 
 from file_hunter_agent.config import is_path_allowed
 from file_hunter_agent.response import json_ok, json_error
+
+# Shutdown flag — checked between files in batch hashing so threads exit promptly
+_shutdown = threading.Event()
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +216,8 @@ def _inode_sorted_hash_batch(file_paths, hash_fn, result_key):
 
     results = []
     for _ino, p in inode_paths:
+        if _shutdown.is_set():
+            break
         file_t = time.monotonic()
         try:
             file_size = os.path.getsize(p)
@@ -268,9 +274,12 @@ async def hash_partial_batch(request: Request):
 
     from file_hunter_core.hasher import hash_file_partial_sync
 
-    results, errors = await asyncio.to_thread(
-        _inode_sorted_hash_batch, paths, hash_file_partial_sync, "hash_partial"
-    )
+    try:
+        results, errors = await asyncio.to_thread(
+            _inode_sorted_hash_batch, paths, hash_file_partial_sync, "hash_partial"
+        )
+    except asyncio.CancelledError:
+        return json_ok({"results": [], "errors": [], "cancelled": True})
     return json_ok({"results": results, "errors": errors})
 
 
@@ -283,9 +292,12 @@ async def hash_fast_batch(request: Request):
 
     from file_hunter_core.hasher import hash_fast_only_sync
 
-    results, errors = await asyncio.to_thread(
-        _inode_sorted_hash_batch, paths, hash_fast_only_sync, "hash_fast"
-    )
+    try:
+        results, errors = await asyncio.to_thread(
+            _inode_sorted_hash_batch, paths, hash_fast_only_sync, "hash_fast"
+        )
+    except asyncio.CancelledError:
+        return json_ok({"results": [], "errors": [], "cancelled": True})
     return json_ok({"results": results, "errors": errors})
 
 

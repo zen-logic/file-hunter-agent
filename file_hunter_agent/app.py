@@ -50,6 +50,7 @@ from file_hunter_agent.routes.disk_stats import disk_stats
 from file_hunter_agent.routes.scan import scan_start, scan_cancel
 from file_hunter_agent.routes.reconcile import reconcile
 from file_hunter_agent.routes.tree import tree
+from file_hunter_agent.routes.listdir import list_dir
 from file_hunter_agent.routes.status import status
 
 
@@ -67,6 +68,10 @@ async def on_startup():
 
 async def on_shutdown():
     from file_hunter_agent import client
+    from file_hunter_agent.routes.files import _shutdown as _files_shutdown
+
+    # Signal hash batch threads to stop between files
+    _files_shutdown.set()
 
     client._shutting_down = True
     if _ws_task and not _ws_task.done():
@@ -115,6 +120,7 @@ def create_app():
             Route("/scan/cancel", scan_cancel, methods=["POST"]),
             Route("/reconcile", reconcile, methods=["POST"]),
             Route("/tree", tree, methods=["POST"]),
+            Route("/list-dir", list_dir, methods=["POST"]),
             Route("/disk-stats", disk_stats, methods=["POST"]),
             Route("/status", status, methods=["GET"]),
         ],

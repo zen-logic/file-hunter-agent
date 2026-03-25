@@ -77,6 +77,7 @@ async def run_client():
                                 "tsv_tree",
                                 "hash_partial_batch",
                                 "stream_first_scan",
+                                "quick_scan",
                             ],
                         }
                     )
