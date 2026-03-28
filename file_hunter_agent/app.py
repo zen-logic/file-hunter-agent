@@ -2,31 +2,17 @@
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-logger = logging.getLogger(__name__)
-
-
-async def _handle_error(request: Request, exc: Exception) -> JSONResponse:
-    """Global handler — turn unhandled exceptions into JSON error responses."""
-    logger.error("Unhandled error on %s: %s", request.url.path, exc)
-    return JSONResponse(
-        {"ok": False, "error": str(exc)},
-        status_code=500,
-    )
-
 from file_hunter_agent import config
 from file_hunter_agent.auth import AgentAuthMiddleware
 from file_hunter_agent.routes.browse import browse, browse_system
-from file_hunter_agent.routes.locations import (
-    add_location,
-    rename_location,
-    delete_location,
-)
+from file_hunter_agent.routes.disk_stats import disk_stats
 from file_hunter_agent.routes.files import (
     file_content,
     file_delete,
@@ -45,13 +31,28 @@ from file_hunter_agent.routes.folders import (
     folder_move,
     folder_exists,
 )
-from file_hunter_agent.routes.upload import upload
-from file_hunter_agent.routes.disk_stats import disk_stats
-from file_hunter_agent.routes.scan import scan_start, scan_cancel
-from file_hunter_agent.routes.reconcile import reconcile
-from file_hunter_agent.routes.tree import tree
 from file_hunter_agent.routes.listdir import list_dir
+from file_hunter_agent.routes.locations import (
+    add_location,
+    rename_location,
+    delete_location,
+)
+from file_hunter_agent.routes.reconcile import reconcile
+from file_hunter_agent.routes.scan import scan_start, scan_cancel
 from file_hunter_agent.routes.status import status
+from file_hunter_agent.routes.tree import tree
+from file_hunter_agent.routes.upload import upload
+
+logger = logging.getLogger(__name__)
+
+
+async def _handle_error(request: Request, exc: Exception) -> JSONResponse:
+    """Global handler — turn unhandled exceptions into JSON error responses."""
+    logger.error("Unhandled error on %s: %s", request.url.path, exc)
+    return JSONResponse(
+        {"ok": False, "error": str(exc)},
+        status_code=500,
+    )
 
 
 _ws_task = None
@@ -84,7 +85,6 @@ async def on_shutdown():
 
 def create_app():
     """Create and return the ASGI app with auth middleware."""
-    from contextlib import asynccontextmanager
 
     @asynccontextmanager
     async def lifespan(app):

@@ -12,6 +12,7 @@ batches are processed, so cancelled scans can resume.
 
 import asyncio
 import logging
+import os
 import time
 from collections import deque
 
@@ -112,8 +113,6 @@ async def _run_scan(path: str, root_path: str):
 
         # --- Discovery phase: BFS walk ---
         logger.info("Discovery phase starting for: %s (root: %s)", path, root_path)
-        import os as _os
-
         queue = deque([(path, False)])  # (dirpath, is_hidden)
 
         while queue:
@@ -133,7 +132,7 @@ async def _run_scan(path: str, root_path: str):
                 scan_directory, dirpath, root_path, dir_hidden
             )
             for subdir in subdirs:
-                sub_hidden = dir_hidden or _os.path.basename(subdir).startswith(".")
+                sub_hidden = dir_hidden or os.path.basename(subdir).startswith(".")
                 queue.append((subdir, sub_hidden))
 
             for fi in file_infos:

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 
 from starlette.concurrency import iterate_in_threadpool
 from starlette.requests import Request
@@ -46,8 +47,6 @@ async def tree(request: Request):
     if not is_path_allowed(path):
         return json_error("Path is not within a configured location.", status=403)
     if prefix:
-        import os
-
         full = os.path.join(path, prefix)
         if not is_path_allowed(full):
             return json_error(

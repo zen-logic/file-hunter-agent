@@ -1,6 +1,7 @@
 """File operations — content serving, delete, move, write, stat, exists, hash."""
 
 import asyncio
+import base64
 import logging
 import mimetypes
 import os
@@ -52,8 +53,6 @@ async def file_write(request: Request):
         return json_error(_FORBIDDEN, status=403)
 
     if encoding == "base64":
-        import base64
-
         data = base64.b64decode(content)
         if append:
             await asyncio.to_thread(_append_bytes, path, data)
@@ -190,9 +189,6 @@ def _inode_sorted_hash_batch(file_paths, hash_fn, result_key):
 
     Returns (results, errors) tuple.
     """
-    import os
-    import time
-
     inode_paths = []
     errors = []
     for p in file_paths:

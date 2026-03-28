@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """File Hunter Agent launcher — equivalent to: python -m file_hunter_agent"""
 
+import sys
+
 if __name__ == "__main__":
-    import sys
 
     REQUIRED_PACKAGES = {
         "starlette": "starlette",

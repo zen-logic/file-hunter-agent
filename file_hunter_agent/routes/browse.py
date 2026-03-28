@@ -1,6 +1,7 @@
 """Filesystem browsing endpoint."""
 
 import asyncio
+import os
 
 from starlette.requests import Request
 
@@ -45,8 +46,6 @@ async def browse_system(request: Request):
 
 
 def _has_children(path: str) -> bool:
-    import os
-
     try:
         for name in os.listdir(path):
             if name.startswith("."):

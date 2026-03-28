@@ -7,6 +7,7 @@ automatic reconnection.
 import asyncio
 import json
 import logging
+import os
 import platform
 
 import websockets
@@ -198,8 +199,6 @@ async def _receive_loop(ws):
 
 async def _path_monitor():
     """Poll location paths and send updates when availability changes."""
-    import os
-
     last_status: dict[str, bool] = {}
     for loc in config.get_locations():
         last_status[loc["path"]] = os.path.isdir(loc["path"])
