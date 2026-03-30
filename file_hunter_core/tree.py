@@ -59,7 +59,7 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv",
     while queue:
         dirpath = queue.popleft()
 
-        rel_dir = os.path.relpath(dirpath, root)
+        rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
         if rel_dir == ".":
             rel_dir = ""
 
@@ -96,7 +96,7 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv",
             if not stat.S_ISREG(st.st_mode):
                 continue
 
-            rel_path = os.path.join(rel_dir, entry.name) if rel_dir else entry.name
+            rel_path = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
             mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(
                 timespec="seconds"
             )
