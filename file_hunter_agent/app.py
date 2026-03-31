@@ -15,6 +15,7 @@ from file_hunter_agent.routes.browse import browse, browse_system
 from file_hunter_agent.routes.disk_stats import disk_stats
 from file_hunter_agent.routes.files import (
     file_content,
+    file_copy,
     file_delete,
     file_move,
     file_write,
@@ -102,6 +103,7 @@ def create_app():
             Route("/locations/rename", rename_location, methods=["POST"]),
             Route("/locations/delete", delete_location, methods=["POST"]),
             Route("/files/content", file_content, methods=["GET"]),
+            Route("/files/copy", file_copy, methods=["POST"]),
             Route("/files/delete", file_delete, methods=["POST"]),
             Route("/files/move", file_move, methods=["POST"]),
             Route("/files/write", file_write, methods=["POST"]),

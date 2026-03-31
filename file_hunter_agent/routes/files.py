@@ -360,6 +360,32 @@ async def file_delete(request: Request):
     return json_ok({"deleted": path})
 
 
+async def file_copy(request: Request):
+    """Copy a file locally and optionally preserve mtime."""
+    body = await request.json()
+    src = body.get("path", "")
+    dest = body.get("destination", "")
+    mtime = body.get("mtime")
+    if not src or not dest:
+        return json_error("path and destination are required.")
+    if not is_path_allowed(src):
+        return json_error(_FORBIDDEN, status=403)
+    if not is_path_allowed(dest):
+        return json_error(_FORBIDDEN, status=403)
+
+    exists = await asyncio.to_thread(os.path.isfile, src)
+    if not exists:
+        return json_error("Source file not found.", status=404)
+
+    def _copy():
+        shutil.copy2(src, dest)
+        if mtime is not None:
+            os.utime(dest, (mtime, mtime))
+
+    await asyncio.to_thread(_copy)
+    return json_ok({"copied": src, "destination": dest})
+
+
 async def file_move(request: Request):
     """Move/rename a file."""
     body = await request.json()
