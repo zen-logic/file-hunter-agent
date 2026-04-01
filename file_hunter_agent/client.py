@@ -79,6 +79,7 @@ async def run_client():
                                 "hash_partial_batch",
                                 "stream_first_scan",
                                 "quick_scan",
+                                "files_copy",
                             ],
                         }
                     )
