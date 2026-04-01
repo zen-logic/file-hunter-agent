@@ -10,7 +10,7 @@ import threading
 import time
 
 from starlette.requests import Request
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, StreamingResponse
 
 from file_hunter_agent.config import is_path_allowed
 from file_hunter_agent.response import json_ok, json_error
@@ -309,8 +309,33 @@ async def file_content(request: Request):
     if not exists:
         return json_error("File not found.", status=404)
 
+    try:
+        stat = await asyncio.to_thread(os.stat, path)
+    except OSError as e:
+        logger.error("Cannot stat %s: %s", path, e)
+        return json_error(f"I/O error: {e}", status=500)
+
     content_type, _ = mimetypes.guess_type(path)
-    return FileResponse(path, media_type=content_type or "application/octet-stream")
+
+    async def _safe_stream():
+        try:
+            fp = await asyncio.to_thread(open, path, "rb")
+            try:
+                while True:
+                    chunk = await asyncio.to_thread(fp.read, 1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                await asyncio.to_thread(fp.close)
+        except OSError as e:
+            logger.error("I/O error streaming %s: %s", path, e)
+
+    return StreamingResponse(
+        _safe_stream(),
+        media_type=content_type or "application/octet-stream",
+        headers={"content-length": str(stat.st_size)},
+    )
 
 
 async def stream_write(request: Request):
