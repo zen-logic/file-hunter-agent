@@ -58,11 +58,15 @@ async def file_write(request: Request):
             await asyncio.to_thread(_append_bytes, path, data)
         else:
             await asyncio.to_thread(_write_bytes, path, data)
+        size = len(data)
     else:
         if append:
             await asyncio.to_thread(_append_text, path, content)
         else:
             await asyncio.to_thread(_write_text, path, content)
+        size = len(content.encode("utf-8"))
+    mode = "append" if append else "write"
+    logger.info("File %s: %s (%d bytes)", mode, os.path.basename(path), size)
     return json_ok({"written": path})
 
 
@@ -365,6 +369,7 @@ async def stream_write(request: Request):
         t = float(mtime)
         await asyncio.to_thread(os.utime, path, (t, t))
 
+    logger.info("Stream write: %s (%d bytes)", os.path.basename(path), total)
     return json_ok({"written": path, "size": total})
 
 
@@ -382,6 +387,7 @@ async def file_delete(request: Request):
         return json_error("File not found.", status=404)
 
     await asyncio.to_thread(os.remove, path)
+    logger.info("File delete: %s", os.path.basename(path))
     return json_ok({"deleted": path})
 
 
@@ -408,6 +414,7 @@ async def file_copy(request: Request):
             os.utime(dest, (mtime, mtime))
 
     await asyncio.to_thread(_copy)
+    logger.info("File copy: %s → %s", os.path.basename(src), os.path.basename(dest))
     return json_ok({"copied": src, "destination": dest})
 
 
@@ -428,4 +435,5 @@ async def file_move(request: Request):
         return json_error("Source file not found.", status=404)
 
     await asyncio.to_thread(shutil.move, src, dest)
+    logger.info("File move: %s → %s", os.path.basename(src), os.path.basename(dest))
     return json_ok({"moved": src, "destination": dest})

@@ -1,6 +1,7 @@
 """Folder operations — create, delete, move, exists."""
 
 import asyncio
+import logging
 import os
 import shutil
 
@@ -8,6 +9,8 @@ from starlette.requests import Request
 
 from file_hunter_agent.config import is_path_allowed
 from file_hunter_agent.response import json_ok, json_error
+
+logger = logging.getLogger(__name__)
 
 _FORBIDDEN = "Path is not within a configured location."
 
@@ -29,6 +32,7 @@ async def folder_move(request: Request):
         return json_error("Source directory not found.", status=404)
 
     await asyncio.to_thread(shutil.move, src, dest)
+    logger.info("Folder move: %s → %s", os.path.basename(src), os.path.basename(dest))
     return json_ok({"moved": src, "destination": dest})
 
 
@@ -55,6 +59,7 @@ async def folder_create(request: Request):
         return json_error(_FORBIDDEN, status=403)
 
     await asyncio.to_thread(os.makedirs, path, exist_ok=True)
+    logger.info("Folder create: %s", os.path.basename(path))
     return json_ok({"created": path})
 
 
@@ -72,4 +77,5 @@ async def folder_delete(request: Request):
         return json_error("Directory not found.", status=404)
 
     await asyncio.to_thread(shutil.rmtree, path)
+    logger.info("Folder delete: %s", os.path.basename(path))
     return json_ok({"deleted": path})
