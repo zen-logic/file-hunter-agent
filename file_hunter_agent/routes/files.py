@@ -302,7 +302,7 @@ async def hash_fast_batch(request: Request):
 
 
 async def file_content(request: Request):
-    """Serve raw file bytes with correct MIME type."""
+    """Serve raw file bytes with correct MIME type. Supports Range requests."""
     path = request.query_params.get("path", "")
     if not path:
         return json_error("path is required.")
@@ -319,26 +319,64 @@ async def file_content(request: Request):
         logger.error("Cannot stat %s: %s", path, e)
         return json_error(f"I/O error: {e}", status=500)
 
+    total_size = stat.st_size
     content_type, _ = mimetypes.guess_type(path)
+    media_type = content_type or "application/octet-stream"
+
+    # Parse Range header
+    range_header = request.headers.get("range")
+    start = 0
+    end = total_size - 1
+
+    if range_header and range_header.startswith("bytes="):
+        range_spec = range_header[6:]
+        parts = range_spec.split("-", 1)
+        if parts[0]:
+            start = int(parts[0])
+        if parts[1]:
+            end = int(parts[1])
+        end = min(end, total_size - 1)
+
+    length = end - start + 1
 
     async def _safe_stream():
         try:
             fp = await asyncio.to_thread(open, path, "rb")
             try:
-                while True:
-                    chunk = await asyncio.to_thread(fp.read, 1024 * 1024)
+                if start > 0:
+                    await asyncio.to_thread(fp.seek, start)
+                remaining = length
+                while remaining > 0:
+                    chunk_size = min(1024 * 1024, remaining)
+                    chunk = await asyncio.to_thread(fp.read, chunk_size)
                     if not chunk:
                         break
+                    remaining -= len(chunk)
                     yield chunk
             finally:
                 await asyncio.to_thread(fp.close)
         except OSError as e:
             logger.error("I/O error streaming %s: %s", path, e)
 
+    if range_header:
+        return StreamingResponse(
+            _safe_stream(),
+            status_code=206,
+            media_type=media_type,
+            headers={
+                "content-length": str(length),
+                "content-range": f"bytes {start}-{end}/{total_size}",
+                "accept-ranges": "bytes",
+            },
+        )
+
     return StreamingResponse(
         _safe_stream(),
-        media_type=content_type or "application/octet-stream",
-        headers={"content-length": str(stat.st_size)},
+        media_type=media_type,
+        headers={
+            "content-length": str(total_size),
+            "accept-ranges": "bytes",
+        },
     )
 
 
