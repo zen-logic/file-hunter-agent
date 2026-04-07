@@ -22,9 +22,11 @@ async def upload(request: Request):
     if not exists:
         return json_error("Destination directory not found.", status=404)
 
+    mtime = form.get("mtime")
+
     saved = []
     for key in form:
-        if key == "dest_dir":
+        if key in ("dest_dir", "mtime"):
             continue
         upload_file = form[key]
         if not hasattr(upload_file, "read"):
@@ -34,6 +36,12 @@ async def upload(request: Request):
         dest_path = os.path.join(dest_dir, filename)
         upload_file.file.seek(0)
         size = await asyncio.to_thread(_stream_to_file, upload_file.file, dest_path)
+
+        # Restore original modified time if provided
+        if mtime:
+            t = float(mtime)
+            await asyncio.to_thread(os.utime, dest_path, (t, t))
+
         saved.append({"filename": filename, "path": dest_path, "size": size})
 
     return json_ok({"files": saved})
