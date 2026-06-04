@@ -16,7 +16,7 @@ logger = logging.getLogger("file_hunter_agent")
 
 
 async def _safe_tree_stream(path, prefix, metadata_only=False):
-    """Wrap tree walk so shutdown cancellation doesn't produce tracebacks."""
+    """Wrap tree walk so errors yield an error record instead of killing the stream."""
     try:
         async for chunk in iterate_in_threadpool(
             walk_tree(path, prefix, metadata_only=metadata_only)
@@ -24,6 +24,10 @@ async def _safe_tree_stream(path, prefix, metadata_only=False):
             yield chunk
     except asyncio.CancelledError:
         logger.info("Tree walk cancelled (shutdown): %s", path)
+    except Exception as e:
+        logger.error("Tree walk failed: %s — %s", path, e, exc_info=True)
+        safe_msg = str(e).replace("\t", " ").replace("\n", " ")
+        yield f"X\t{safe_msg}\n"
 
 
 async def tree(request: Request):
