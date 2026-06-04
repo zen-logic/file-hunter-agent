@@ -7,6 +7,8 @@ Phase 1 (metadata): streams D and F records as directories are discovered.
 
 Phase 2 (hashing): streams H records for all files sorted by inode.
   Reads first+last 64KB per file. Inode order minimises disk seeks.
+  File list spilled to a temp SQLite DB during phase 1 so memory stays
+  O(1) regardless of location size.
 
 TSV format (tabs in filenames converted to spaces):
     D\trel_dir\n
@@ -14,13 +16,13 @@ TSV format (tabs in filenames converted to spaces):
     P\thashing\ttotal_files\n
     H\trel_path\thash_partial\n
     E\ttotal_dirs\ttotal_files\n
-
-Memory: O(total files) — all file paths retained for hash phase.
 """
 
 import logging
 import os
+import sqlite3
 import stat
+import tempfile
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -52,8 +54,34 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv",
     total_dirs = 0
     total_files = 0
 
-    # Collect all files for hash phase
-    all_files: list[tuple[int, str, str, int]] = []  # (inode, full_path, rel_path, size)
+    # Spill file list to disk so memory stays O(1) for the hash phase
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".db", prefix="tree_")
+    os.close(tmp_fd)
+    spill_db = sqlite3.connect(tmp_path)
+    spill_db.execute("PRAGMA journal_mode=OFF")
+    spill_db.execute("PRAGMA synchronous=OFF")
+    spill_db.execute(
+        "CREATE TABLE files (inode INTEGER, full_path TEXT, rel_path TEXT, size INTEGER)"
+    )
+    spill_batch: list[tuple] = []
+    hashable_count = 0
+
+    try:
+        yield from _walk_and_hash(
+            root, start, queue, spill_db, spill_batch, scope, t0, last_log,
+            total_dirs, total_files, hashable_count, metadata_only, tmp_path,
+        )
+    finally:
+        spill_db.close()
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def _walk_and_hash(root, start, queue, spill_db, spill_batch, scope, t0, last_log,
+                   total_dirs, total_files, hashable_count, metadata_only, tmp_path):
+    """Inner generator — separated so walk_tree's finally block always cleans up."""
 
     # --- Phase 1: metadata ---
     while queue:
@@ -120,9 +148,13 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv",
         for ino, full_path, rel_path, size, mtime, ctime in dir_files:
             safe_rel = rel_path.replace(chr(9), " ")
             lines.append(f"F\t{safe_rel}\t{size}\t{mtime}\t{ctime}\t{ino}\n")
-            # Collect for hash phase (skip zero-byte)
             if size > 0:
-                all_files.append((ino, full_path, rel_path, size))
+                spill_batch.append((ino, full_path, rel_path, size))
+                hashable_count += 1
+                if len(spill_batch) >= 5000:
+                    spill_db.executemany("INSERT INTO files VALUES (?,?,?,?)", spill_batch)
+                    spill_db.commit()
+                    spill_batch.clear()
 
         total_dirs += 1
         total_files += len(dir_files)
@@ -147,11 +179,17 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv",
         return
 
     # --- Phase 2: hash partials in inode order ---
-    all_files.sort(key=lambda e: e[0])
-    hashable = len(all_files)
-    logger.info("Tree hash phase: %d files to hash (inode-sorted)", hashable)
+    # Flush remaining spill batch and index for sorted read
+    if spill_batch:
+        spill_db.executemany("INSERT INTO files VALUES (?,?,?,?)", spill_batch)
+        spill_db.commit()
+        spill_batch.clear()
+    spill_db.execute("CREATE INDEX idx_inode ON files(inode)")
+    spill_db.commit()
 
-    yield f"P\thashing\t{hashable}\n"
+    logger.info("Tree hash phase: %d files to hash (inode-sorted)", hashable_count)
+
+    yield f"P\thashing\t{hashable_count}\n"
 
     hash_t0 = time.monotonic()
     last_flush = hash_t0
@@ -159,7 +197,8 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv",
     hashed = 0
     buf: list[str] = []
 
-    for ino, full_path, rel_path, size in all_files:
+    cursor = spill_db.execute("SELECT inode, full_path, rel_path, size FROM files ORDER BY inode")
+    for ino, full_path, rel_path, size in cursor:
         try:
             hp = hash_file_partial_sync(full_path)
         except (OSError, PermissionError):
@@ -183,7 +222,7 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv",
                 "Tree hash progress: %s — %d / %d hashed (%.0f/sec, %.1fs)",
                 scope,
                 hashed,
-                hashable,
+                hashable_count,
                 rate,
                 now - hash_t0,
             )
