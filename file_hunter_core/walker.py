@@ -1,7 +1,7 @@
-"""Directory walker — synchronous breadth-first scan of a single directory.
+"""Directory walker — synchronous scan of a single directory.
 
-Returns raw file metadata and subdirectory paths. No database, no async.
-The server's scanner calls this in a thread and handles DB upsert separately.
+Generator yielding subdirectory paths and file metadata one at a time.
+No database, no async. The caller handles DB upsert separately.
 """
 
 import os
@@ -12,65 +12,46 @@ from file_hunter_core.classify import classify_file
 
 
 def scan_directory(dirpath: str, root_path: str, parent_hidden: bool = False):
-    """Scan a single directory. Returns (subdirs, file_infos).
+    """Scan a single directory. Yields ("dir", path) or ("file", info_dict).
 
-    subdirs: list of full paths to non-symlink subdirectories
-    file_infos: list of dicts with file metadata for non-symlink files
+    Subdirectories yield as ("dir", full_path).
+    Files yield as ("file", metadata_dict).
 
     Dotfiles/dotfolders are included with hidden=1. Files inside a hidden
     parent directory inherit hidden status.
     """
-    subdirs = []
-    file_infos = []
-
     try:
-        entries = os.listdir(dirpath)
+        scandir_it = os.scandir(dirpath)
     except (PermissionError, OSError):
-        return subdirs, file_infos
+        return
 
     rel_dir = os.path.relpath(dirpath, root_path).replace(os.sep, "/")
     if rel_dir == ".":
         rel_dir = ""
 
-    for name in entries:
-        hidden = parent_hidden or name.startswith(".")
-
-        full_path = os.path.join(dirpath, name)
-
+    for entry in scandir_it:
         try:
-            is_link = os.path.islink(full_path)
+            if entry.is_symlink():
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                yield ("dir", entry.path)
+                continue
+            st = entry.stat(follow_symlinks=False)
         except OSError:
             continue
 
-        if is_link:
-            continue
-
-        try:
-            is_dir = os.path.isdir(full_path)
-        except OSError:
-            continue
-
-        if is_dir:
-            subdirs.append(full_path)
-            continue
-
-        # It's a file — stat it
-        try:
-            st = os.stat(full_path)
-        except OSError:
-            continue
-
-        # Skip non-regular files (sockets, FIFOs, device nodes)
         if not stat.S_ISREG(st.st_mode):
             continue
 
-        rel_path = f"{rel_dir}/{name}" if rel_dir else name
-        type_high, type_low = classify_file(name)
+        hidden = parent_hidden or entry.name.startswith(".")
+        rel_path = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
+        type_high, type_low = classify_file(entry.name)
 
-        file_infos.append(
+        yield (
+            "file",
             {
-                "filename": name,
-                "full_path": full_path,
+                "filename": entry.name,
+                "full_path": entry.path,
                 "rel_path": rel_path,
                 "rel_dir": rel_dir,
                 "file_size": st.st_size,
@@ -84,7 +65,5 @@ def scan_directory(dirpath: str, root_path: str, parent_hidden: bool = False):
                 "file_type_high": type_high,
                 "file_type_low": type_low,
                 "hidden": 1 if hidden else 0,
-            }
+            },
         )
-
-    return subdirs, file_infos

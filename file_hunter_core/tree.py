@@ -103,14 +103,15 @@ def _walk_and_hash(root, start, queue, spill_db, spill_batch, scope, t0, last_lo
             last_log = now
 
         try:
-            entries = list(os.scandir(dirpath))
+            scandir_it = os.scandir(dirpath)
         except (PermissionError, OSError):
             continue
 
         subdirs = []
-        dir_files: list[tuple[int, str, str, int, str, str]] = []
+        dir_file_count = 0
+        line_buf = [f"D\t{rel_dir.replace(chr(9), ' ')}\n"]
 
-        for entry in entries:
+        for entry in scandir_it:
             try:
                 if entry.is_symlink():
                     continue
@@ -133,33 +134,31 @@ def _walk_and_hash(root, start, queue, spill_db, spill_batch, scope, t0, last_lo
                 tz=timezone.utc,
             ).isoformat(timespec="seconds")
 
-            # Reinterpret as signed 64-bit for SQLite compatibility —
-            # lossless, preserves sort order within a filesystem
             ino = st.st_ino
             if ino >= 2**63:
                 ino -= 2**64
-            dir_files.append(
-                (ino, entry.path, rel_path, st.st_size, mtime, ctime)
-            )
 
-        # Build chunk: D record + F records (no hashes)
-        lines = [f"D\t{rel_dir.replace(chr(9), ' ')}\n"]
-
-        for ino, full_path, rel_path, size, mtime, ctime in dir_files:
             safe_rel = rel_path.replace(chr(9), " ")
-            lines.append(f"F\t{safe_rel}\t{size}\t{mtime}\t{ctime}\t{ino}\n")
-            if size > 0:
-                spill_batch.append((ino, full_path, rel_path, size))
+            line_buf.append(f"F\t{safe_rel}\t{st.st_size}\t{mtime}\t{ctime}\t{ino}\n")
+            dir_file_count += 1
+
+            if st.st_size > 0:
+                spill_batch.append((ino, entry.path, rel_path, st.st_size))
                 hashable_count += 1
                 if len(spill_batch) >= 5000:
                     spill_db.executemany("INSERT INTO files VALUES (?,?,?,?)", spill_batch)
                     spill_db.commit()
                     spill_batch.clear()
 
-        total_dirs += 1
-        total_files += len(dir_files)
+            if len(line_buf) >= 1000:
+                yield "".join(line_buf)
+                line_buf.clear()
 
-        yield "".join(lines)
+        total_dirs += 1
+        total_files += dir_file_count
+
+        if line_buf:
+            yield "".join(line_buf)
 
         for sd in sorted(subdirs):
             queue.append(sd)

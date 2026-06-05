@@ -19,6 +19,8 @@ from collections import deque
 from file_hunter_core.walker import scan_directory
 from file_hunter_core.hasher import hash_file_partial_sync
 
+_SCAN_BATCH = 200  # entries consumed per thread dispatch from scan_directory
+
 logger = logging.getLogger("file_hunter_agent")
 
 # Scan state
@@ -91,28 +93,25 @@ async def _run_scan(path: str, root_path: str):
     files_unchanged = 0
     last_progress = 0.0
     file_batch = []
-    all_files = []
 
     from file_hunter_agent.services.cache import ScanCache
 
     scan_cache = ScanCache(root_path)
 
     try:
-        # --- Load cache for incremental mode ---
+        # --- Check cache for incremental mode ---
         await asyncio.to_thread(scan_cache.open)
-        cache = await asyncio.to_thread(scan_cache.load)
-        incremental = bool(cache)
+        incremental = await asyncio.to_thread(scan_cache.has_entries)
         if incremental:
-            logger.info(
-                "Incremental scan: %d cached entries for %s", len(cache), root_path
-            )
+            logger.info("Incremental scan for %s", root_path)
+            await asyncio.to_thread(scan_cache.begin_seen_tracking)
         else:
             logger.info("Full scan (no cache): %s", root_path)
 
-        seen_paths: set[str] = set()
+        seen_batch: list[str] = []
 
-        # --- Discovery phase: BFS walk ---
-        logger.info("Discovery phase starting for: %s (root: %s)", path, root_path)
+        # --- Walk and hash inline ---
+        logger.info("Scan starting for: %s (root: %s)", path, root_path)
         queue = deque([(path, False)])  # (dirpath, is_hidden)
 
         while queue:
@@ -128,34 +127,74 @@ async def _run_scan(path: str, root_path: str):
                 return
 
             dirpath, dir_hidden = queue.popleft()
-            subdirs, file_infos = await asyncio.to_thread(
-                scan_directory, dirpath, root_path, dir_hidden
-            )
-            for subdir in subdirs:
-                sub_hidden = dir_hidden or os.path.basename(subdir).startswith(".")
-                queue.append((subdir, sub_hidden))
+            scan_iter = scan_directory(dirpath, root_path, dir_hidden)
 
-            for fi in file_infos:
-                # Skip .moved and .sources stubs
-                name = fi["filename"]
-                if name.endswith(".moved") or name.endswith(".sources"):
-                    continue
+            def _next_batch(it=scan_iter):
+                batch = []
+                for _ in range(_SCAN_BATCH):
+                    item = next(it, None)
+                    if item is None:
+                        break
+                    batch.append(item)
+                return batch
 
-                files_found += 1
-                rel_path = fi["rel_path"]
-                seen_paths.add(rel_path)
-
-                if incremental:
-                    cached = cache.get(rel_path)
-                    if (
-                        cached
-                        and cached[0] == fi["file_size"]
-                        and cached[1] == fi["modified_date"]
-                    ):
-                        files_unchanged += 1
+            while True:
+                batch = await asyncio.to_thread(_next_batch)
+                if not batch:
+                    break
+                for item_type, data in batch:
+                    if item_type == "dir":
+                        sub_hidden = dir_hidden or os.path.basename(data).startswith(".")
+                        queue.append((data, sub_hidden))
+                        continue
+                    fi = data
+                    name = fi["filename"]
+                    if name.endswith(".moved") or name.endswith(".sources"):
                         continue
 
-                all_files.append(fi)
+                    files_found += 1
+                    rel_path = fi["rel_path"]
+
+                    if incremental:
+                        seen_batch.append(rel_path)
+                        if len(seen_batch) >= 500:
+                            await asyncio.to_thread(scan_cache.mark_seen_batch, seen_batch)
+                            seen_batch.clear()
+
+                        cached = await asyncio.to_thread(scan_cache.lookup, rel_path)
+                        if (
+                            cached
+                            and cached[0] == fi["file_size"]
+                            and cached[1] == fi["modified_date"]
+                        ):
+                            files_unchanged += 1
+                            continue
+
+                    # Hash inline instead of accumulating
+                    fp = fi["full_path"]
+                    if fi.get("hidden") or fi.get("file_size", 0) == 0:
+                        fi["hash_partial"] = None
+                        fi["hash_fast"] = None
+                        fi["hash_strong"] = None
+                    else:
+                        try:
+                            partial = await asyncio.to_thread(hash_file_partial_sync, fp)
+                            fi["hash_partial"] = partial
+                            fi["hash_fast"] = None
+                            fi["hash_strong"] = None
+                        except OSError as e:
+                            logger.warning("Hash failed: %s: %s", fp, e)
+                            fi["hash_partial"] = None
+                            fi["hash_fast"] = None
+                            fi["hash_strong"] = None
+
+                    files_hashed += 1
+                    file_batch.append(fi)
+
+                    if len(file_batch) >= BATCH_SIZE:
+                        await _send({"type": "scan_files", "path": path, "files": file_batch})
+                        await asyncio.to_thread(scan_cache.update_batch, file_batch)
+                        file_batch = []
 
             # Throttled progress broadcast
             now = time.monotonic()
@@ -165,80 +204,7 @@ async def _run_scan(path: str, root_path: str):
                     {
                         "type": "scan_progress",
                         "path": path,
-                        "phase": "discovery",
-                        "filesFound": files_found,
-                        "filesHashed": files_hashed,
-                        "filesUnchanged": files_unchanged,
-                    }
-                )
-
-        # --- Identify deleted files ---
-        deleted_paths = []
-        if incremental:
-            deleted_paths = [rp for rp in cache if rp not in seen_paths]
-            if deleted_paths:
-                logger.info(
-                    "Incremental: %d deleted files detected", len(deleted_paths)
-                )
-                await asyncio.to_thread(scan_cache.remove_deleted, deleted_paths)
-
-        # --- Hashing phase: only new/changed files ---
-        logger.info(
-            "Hashing phase: %d files to hash (%d unchanged, %d deleted)",
-            len(all_files),
-            files_unchanged,
-            len(deleted_paths),
-        )
-
-        for fi in all_files:
-            if _cancel_flag:
-                await _send(
-                    {
-                        "type": "scan_cancelled",
-                        "path": path,
-                        "filesFound": files_found,
-                        "filesHashed": files_hashed,
-                    }
-                )
-                return
-
-            fp = fi["full_path"]
-
-            # Hidden or zero-byte files — never hash
-            if fi.get("hidden") or fi.get("file_size", 0) == 0:
-                fi["hash_partial"] = None
-                fi["hash_fast"] = None
-                fi["hash_strong"] = None
-            else:
-                try:
-                    partial = await asyncio.to_thread(hash_file_partial_sync, fp)
-                    fi["hash_partial"] = partial
-                    fi["hash_fast"] = None
-                    fi["hash_strong"] = None
-                except OSError as e:
-                    logger.warning("Hash failed: %s: %s", fp, e)
-                    fi["hash_partial"] = None
-                    fi["hash_fast"] = None
-                    fi["hash_strong"] = None
-
-            files_hashed += 1
-            file_batch.append(fi)
-
-            if len(file_batch) >= BATCH_SIZE:
-                await _send({"type": "scan_files", "path": path, "files": file_batch})
-                await asyncio.to_thread(scan_cache.update_batch, file_batch)
-                file_batch = []
-
-            # Throttled progress
-            now = time.monotonic()
-            if now - last_progress >= PROGRESS_INTERVAL:
-                last_progress = now
-                logger.info("Hashing [%d/%d]: %s", files_hashed, len(all_files), fp)
-                await _send(
-                    {
-                        "type": "scan_progress",
-                        "path": path,
-                        "phase": "hashing",
+                        "phase": "scanning",
                         "filesFound": files_found,
                         "filesHashed": files_hashed,
                         "filesUnchanged": files_unchanged,
@@ -249,6 +215,19 @@ async def _run_scan(path: str, root_path: str):
         if file_batch:
             await _send({"type": "scan_files", "path": path, "files": file_batch})
             await asyncio.to_thread(scan_cache.update_batch, file_batch)
+
+        # --- Identify deleted files ---
+        deleted_paths = []
+        if incremental:
+            if seen_batch:
+                await asyncio.to_thread(scan_cache.mark_seen_batch, seen_batch)
+                seen_batch.clear()
+            deleted_paths = await asyncio.to_thread(scan_cache.get_deleted)
+            if deleted_paths:
+                logger.info(
+                    "Incremental: %d deleted files detected", len(deleted_paths)
+                )
+                await asyncio.to_thread(scan_cache.remove_deleted, deleted_paths)
 
         await _send(
             {
