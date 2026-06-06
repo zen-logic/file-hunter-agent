@@ -102,9 +102,12 @@ def _walk_and_hash(root, start, queue, spill_db, spill_batch, scope, t0, last_lo
             )
             last_log = now
 
+        logger.debug("Entering: %s", dirpath)
+
         try:
             scandir_it = os.scandir(dirpath)
-        except (PermissionError, OSError):
+        except (PermissionError, OSError) as e:
+            logger.debug("Skipped (permission/OS error): %s — %s", dirpath, e)
             continue
 
         subdirs = []
@@ -200,7 +203,8 @@ def _walk_and_hash(root, start, queue, spill_db, spill_batch, scope, t0, last_lo
     for ino, full_path, rel_path, size in cursor:
         try:
             hp = hash_file_partial_sync(full_path)
-        except (OSError, PermissionError):
+        except (OSError, PermissionError) as e:
+            logger.debug("Hash skipped: %s — %s", full_path, e)
             continue
 
         safe_rel = rel_path.replace(chr(9), " ")

@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 import sys
 
 import uvicorn
@@ -67,8 +68,9 @@ def main():
     host = config.get("http_host", "0.0.0.0")
     port = config.get("http_port", 8001)
 
+    log_level = logging.DEBUG if os.environ.get("FH_DEBUG") else logging.INFO
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format="%(asctime)s [%(name)s] %(message)s",
         datefmt="%H:%M:%S",
     )
