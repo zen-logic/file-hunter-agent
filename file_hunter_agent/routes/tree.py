@@ -57,6 +57,11 @@ async def tree(request: Request):
                 "Prefix path is not within a configured location.", status=403
             )
 
+    logger.info(
+        "Tree request: path=%s prefix=%s metadata_only=%s",
+        path, prefix, metadata_only,
+    )
+
     return StreamingResponse(
         _safe_tree_stream(path, prefix, metadata_only=metadata_only),
         media_type="text/tab-separated-values",
