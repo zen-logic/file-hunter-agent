@@ -28,6 +28,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 from file_hunter_core.hasher import hash_file_partial_sync
+from file_hunter_core.paths import safe_str, safe_path
 
 logger = logging.getLogger("file_hunter_agent")
 
@@ -57,11 +58,11 @@ def walk_tree(root: str, prefix: str | None = None, fmt: str = "tsv",
     # Spill file list to disk so memory stays O(1) for the hash phase
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".db", prefix="tree_")
     os.close(tmp_fd)
-    spill_db = sqlite3.connect(tmp_path)
+    spill_db = sqlite3.connect(tmp_path, check_same_thread=False)
     spill_db.execute("PRAGMA journal_mode=OFF")
     spill_db.execute("PRAGMA synchronous=OFF")
     spill_db.execute(
-        "CREATE TABLE files (inode INTEGER, full_path TEXT, rel_path TEXT, size INTEGER)"
+        "CREATE TABLE files (inode INTEGER, full_path BLOB, rel_path TEXT, size INTEGER)"
     )
     spill_batch: list[tuple] = []
     hashable_count = 0
@@ -87,7 +88,7 @@ def _walk_and_hash(root, start, queue, spill_db, spill_batch, scope, t0, last_lo
     while queue:
         dirpath = queue.popleft()
 
-        rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
+        rel_dir = safe_str(os.path.relpath(dirpath, root).replace(os.sep, "/"))
         if rel_dir == ".":
             rel_dir = ""
 
@@ -128,7 +129,8 @@ def _walk_and_hash(root, start, queue, spill_db, spill_batch, scope, t0, last_lo
             if not stat.S_ISREG(st.st_mode):
                 continue
 
-            rel_path = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
+            name = safe_str(entry.name)
+            rel_path = f"{rel_dir}/{name}" if rel_dir else name
             mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(
                 timespec="seconds"
             )
@@ -146,7 +148,7 @@ def _walk_and_hash(root, start, queue, spill_db, spill_batch, scope, t0, last_lo
             dir_file_count += 1
 
             if st.st_size > 0:
-                spill_batch.append((ino, entry.path, rel_path, st.st_size))
+                spill_batch.append((ino, safe_path(entry.path), rel_path, st.st_size))
                 hashable_count += 1
                 if len(spill_batch) >= 5000:
                     spill_db.executemany("INSERT INTO files VALUES (?,?,?,?)", spill_batch)
@@ -200,11 +202,11 @@ def _walk_and_hash(root, start, queue, spill_db, spill_batch, scope, t0, last_lo
     buf: list[str] = []
 
     cursor = spill_db.execute("SELECT inode, full_path, rel_path, size FROM files ORDER BY inode")
-    for ino, full_path, rel_path, size in cursor:
+    for ino, full_path_bytes, rel_path, size in cursor:
         try:
-            hp = hash_file_partial_sync(full_path)
+            hp = hash_file_partial_sync(os.fsdecode(full_path_bytes))
         except (OSError, PermissionError) as e:
-            logger.debug("Hash skipped: %s — %s", full_path, e)
+            logger.debug("Hash skipped: %s — %s", rel_path, e)
             continue
 
         safe_rel = rel_path.replace(chr(9), " ")

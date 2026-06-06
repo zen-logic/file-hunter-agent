@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from file_hunter_core.classify import classify_file
 from file_hunter_core.hasher import hash_file_partial_sync
+from file_hunter_core.paths import safe_str
 
 logger = logging.getLogger("file_hunter_agent")
 
@@ -39,7 +40,7 @@ def reconcile_directory(
         total_new: total new file count (only when paginating)
         total_changed: total changed file count (only when paginating)
     """
-    rel_dir = os.path.relpath(dirpath, root_path)
+    rel_dir = safe_str(os.path.relpath(dirpath, root_path))
     if rel_dir == ".":
         rel_dir = ""
 
@@ -64,8 +65,9 @@ def reconcile_directory(
             "subdirs": [],
         }
 
-    for name in entries:
-        full_path = os.path.join(dirpath, name)
+    for raw_name in entries:
+        full_path = os.path.join(dirpath, raw_name)
+        name = safe_str(raw_name)
 
         try:
             is_link = os.path.islink(full_path)
@@ -237,7 +239,7 @@ def _build_file_info(
 
     return {
         "filename": name,
-        "full_path": full_path,
+        "full_path": safe_str(full_path),
         "rel_path": rel_path,
         "rel_dir": rel_dir,
         "file_size": st.st_size,

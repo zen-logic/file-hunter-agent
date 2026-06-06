@@ -9,6 +9,7 @@ import stat
 from datetime import datetime, timezone
 
 from file_hunter_core.classify import classify_file
+from file_hunter_core.paths import safe_str
 
 
 def scan_directory(dirpath: str, root_path: str, parent_hidden: bool = False):
@@ -25,7 +26,7 @@ def scan_directory(dirpath: str, root_path: str, parent_hidden: bool = False):
     except (PermissionError, OSError):
         return
 
-    rel_dir = os.path.relpath(dirpath, root_path).replace(os.sep, "/")
+    rel_dir = safe_str(os.path.relpath(dirpath, root_path).replace(os.sep, "/"))
     if rel_dir == ".":
         rel_dir = ""
 
@@ -43,15 +44,16 @@ def scan_directory(dirpath: str, root_path: str, parent_hidden: bool = False):
         if not stat.S_ISREG(st.st_mode):
             continue
 
-        hidden = parent_hidden or entry.name.startswith(".")
-        rel_path = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
-        type_high, type_low = classify_file(entry.name)
+        name = safe_str(entry.name)
+        hidden = parent_hidden or name.startswith(".")
+        rel_path = f"{rel_dir}/{name}" if rel_dir else name
+        type_high, type_low = classify_file(name)
 
         yield (
             "file",
             {
-                "filename": entry.name,
-                "full_path": entry.path,
+                "filename": name,
+                "full_path": safe_str(entry.path),
                 "rel_path": rel_path,
                 "rel_dir": rel_dir,
                 "file_size": st.st_size,

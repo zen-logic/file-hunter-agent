@@ -6,6 +6,8 @@ Pure filesystem operations, no server dependencies.
 import os
 import platform
 
+from file_hunter_core.paths import safe_str
+
 
 def get_root_entries():
     """Return mount points / volumes as root-level entries."""
@@ -38,8 +40,8 @@ def _make_entry(path, name=None):
     if name is None:
         name = os.path.basename(path) or path
     return {
-        "name": name,
-        "path": path,
+        "name": safe_str(name),
+        "path": safe_str(path),
         "hasChildren": _has_subdirs(path),
     }
 

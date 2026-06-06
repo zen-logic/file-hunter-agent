@@ -7,6 +7,7 @@ from starlette.requests import Request
 
 from file_hunter_agent.config import is_path_allowed
 from file_hunter_agent.response import json_ok, json_error
+from file_hunter_core.paths import safe_str
 
 _FORBIDDEN = "Path is not within a configured location."
 
@@ -19,14 +20,15 @@ def _list_path(path):
         for entry in it:
             try:
                 st = entry.stat()
+                name = safe_str(entry.name)
                 if entry.is_dir(follow_symlinks=False):
                     folders.append({
-                        "name": entry.name,
+                        "name": name,
                         "mtime": st.st_mtime,
                     })
                 elif entry.is_file(follow_symlinks=False):
                     files.append({
-                        "name": entry.name,
+                        "name": name,
                         "size": st.st_size,
                         "mtime": st.st_mtime,
                         "inode": st.st_ino,
