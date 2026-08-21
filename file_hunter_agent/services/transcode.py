@@ -147,6 +147,7 @@ async def _run_transcode(path: str):
 
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg",
+            "-y",
             "-i", path,
             "-c:v", "libx264", "-preset", "slow", "-crf", "18",
             "-c:a", "aac", "-b:a", "192k",
@@ -154,6 +155,7 @@ async def _run_transcode(path: str):
             "-progress", "pipe:1",
             "-nostats",
             output_path,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
