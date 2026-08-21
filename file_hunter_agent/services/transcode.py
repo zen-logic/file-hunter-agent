@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import time
 
 logger = logging.getLogger("file_hunter_agent")
@@ -82,7 +83,7 @@ async def start_transcode(path: str) -> bool:
 
 
 def _output_path(path: str) -> str:
-    """Build the output path, avoiding collisions with existing files."""
+    """Build the final output path, avoiding collisions with existing files."""
     name, _ = os.path.splitext(path)
     candidate = f"{name}-transcode.mp4"
     if not os.path.exists(candidate):
@@ -107,14 +108,20 @@ async def _drain_stderr(proc):
 
 
 async def _run_transcode(path: str):
-    """Run ffmpeg to produce <name>-transcode.mp4 alongside the original."""
+    """Run ffmpeg, writing to a temp dir, then move to the final location.
+
+    The output is written outside the source folder so in-progress files
+    are invisible to scans. Only the final move puts the file where it
+    belongs, and that's atomic on the same filesystem.
+    """
     global _cancel_flag, _current_path
 
+    tmp_dir = None
     try:
-        output_path = _output_path(path)
-        filename = os.path.basename(output_path)
+        final_path = _output_path(path)
+        filename = os.path.basename(final_path)
 
-        # Check disk space — need at least the source file size free
+        # Check disk space on the destination filesystem
         source_size = os.path.getsize(path)
         stat_fs = os.statvfs(os.path.dirname(path))
         free_bytes = stat_fs.f_bavail * stat_fs.f_frsize
@@ -126,10 +133,15 @@ async def _run_transcode(path: str):
             })
             return
 
+        # Create temp dir for the encode — outside configured locations
+        # so scans never see the partial file
+        tmp_dir = tempfile.mkdtemp(prefix="fh-transcode-")
+        tmp_output = os.path.join(tmp_dir, filename)
+
         await _send({
             "type": "transcode_progress",
             "path": path,
-            "output": output_path,
+            "output": final_path,
             "percent": 0,
             "status": "probing",
         })
@@ -139,7 +151,7 @@ async def _run_transcode(path: str):
         await _send({
             "type": "transcode_progress",
             "path": path,
-            "output": output_path,
+            "output": final_path,
             "percent": 0,
             "status": "transcoding",
             "duration": duration,
@@ -154,7 +166,7 @@ async def _run_transcode(path: str):
             "-movflags", "+faststart",
             "-progress", "pipe:1",
             "-nostats",
-            output_path,
+            tmp_output,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -170,8 +182,6 @@ async def _run_transcode(path: str):
                     proc.kill()
                     await proc.wait()
                     stderr_task.cancel()
-                    if os.path.exists(output_path):
-                        os.unlink(output_path)
                     await _send({
                         "type": "transcode_cancelled",
                         "path": path,
@@ -189,7 +199,7 @@ async def _run_transcode(path: str):
                             await _send({
                                 "type": "transcode_progress",
                                 "path": path,
-                                "output": output_path,
+                                "output": final_path,
                                 "percent": round(percent, 1),
                                 "status": "transcoding",
                             })
@@ -202,15 +212,11 @@ async def _run_transcode(path: str):
             proc.kill()
             await proc.wait()
             stderr_task.cancel()
-            if os.path.exists(output_path):
-                os.unlink(output_path)
             raise
 
         if proc.returncode != 0:
             error_msg = stderr_output.decode("utf-8", errors="replace")[-500:]
             logger.error("ffmpeg failed (rc=%d): %s", proc.returncode, error_msg)
-            if os.path.exists(output_path):
-                os.unlink(output_path)
             await _send({
                 "type": "transcode_error",
                 "path": path,
@@ -218,19 +224,22 @@ async def _run_transcode(path: str):
             })
             return
 
-        # Success — stat the output file
-        st = os.stat(output_path)
+        # Move completed file to its final location
+        await asyncio.to_thread(shutil.move, tmp_output, final_path)
+
+        # Success — stat the file at its final location
+        st = os.stat(final_path)
         await _send({
             "type": "transcode_complete",
             "path": path,
-            "output": output_path,
+            "output": final_path,
             "filename": filename,
             "size": st.st_size,
             "mtime": st.st_mtime,
             "ctime": st.st_ctime,
             "inode": st.st_ino,
         })
-        logger.info("Transcode complete: %s -> %s", path, output_path)
+        logger.info("Transcode complete: %s -> %s", path, final_path)
 
     except Exception as exc:
         logger.exception("Transcode failed: %s", exc)
@@ -241,3 +250,6 @@ async def _run_transcode(path: str):
         })
     finally:
         _current_path = None
+        # Clean up temp dir (may contain partial output on error/cancel)
+        if tmp_dir and os.path.isdir(tmp_dir):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
