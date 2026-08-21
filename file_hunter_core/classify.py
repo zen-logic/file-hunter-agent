@@ -25,6 +25,12 @@ _EXT_MAP = {
     "webm": ("video", "webm"),
     "mpg": ("video", "mpeg"),
     "mpeg": ("video", "mpeg"),
+    "mts": ("video", "mts"),
+    "m2ts": ("video", "m2ts"),
+    "m4v": ("video", "m4v"),
+    "3gp": ("video", "3gp"),
+    "vob": ("video", "vob"),
+    "ts": ("video", "ts"),
     # Audio
     "mp3": ("audio", "mp3"),
     "flac": ("audio", "flac"),
