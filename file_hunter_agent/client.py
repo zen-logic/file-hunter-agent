@@ -14,6 +14,7 @@ import websockets
 
 from file_hunter_agent import config
 from file_hunter_agent.services import scanner
+from file_hunter_agent.services import transcode
 
 logger = logging.getLogger("file_hunter_agent")
 
@@ -44,8 +45,9 @@ async def run_client():
     """Main client loop — connects, registers, handles messages. Reconnects on failure."""
     global _ws, _connected
 
-    # Wire up the scanner's send function
+    # Wire up send functions
     scanner.set_send_fn(send_message)
+    transcode.set_send_fn(send_message)
 
     while True:
         try:
@@ -80,7 +82,7 @@ async def run_client():
                                 "stream_first_scan",
                                 "quick_scan",
                                 "files_copy",
-                            ],
+                            ] + (["ffmpeg"] if transcode.is_available() else []),
                         }
                     )
                 )
