@@ -1,10 +1,15 @@
-"""Video transcode service — H.264/AAC MP4 via ffmpeg subprocess."""
+"""Video transcode service — H.264/AAC MP4 via ffmpeg subprocess.
+
+Auto-detects hardware encoders (VideoToolbox, NVENC, VAAPI, QSV) and
+falls back to libx264. Quality presets map to encoder-specific params.
+"""
 
 import asyncio
 import json
 import logging
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 
@@ -16,6 +21,10 @@ _cancel_flag = False
 _send_fn = None
 _current_path: str | None = None
 
+# Detected encoder — set once by detect_encoder()
+_encoder: str | None = None
+_encoder_label: str | None = None
+
 
 def set_send_fn(fn):
     """Register the WebSocket send function for progress updates."""
@@ -26,6 +35,61 @@ def set_send_fn(fn):
 def is_available() -> bool:
     """Check whether ffmpeg and ffprobe are on PATH."""
     return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+
+
+def detect_encoder():
+    """Probe ffmpeg for available H.264 encoders and pick the best one.
+
+    Called once at startup. Sets _encoder and _encoder_label.
+    """
+    global _encoder, _encoder_label
+
+    if not is_available():
+        return
+
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-encoders", "-hide_banner"],
+            capture_output=True, text=True, timeout=10,
+        )
+        output = result.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        _encoder = "libx264"
+        _encoder_label = "software"
+        return
+
+    available = set()
+    for line in output.splitlines():
+        stripped = line.strip()
+        # Encoder lines look like: "V..... h264_nvenc ..."
+        if "h264" in stripped:
+            parts = stripped.split()
+            if len(parts) >= 2:
+                available.add(parts[1])
+
+    # Priority: hardware first, software fallback
+    _PRIORITY = [
+        ("h264_videotoolbox", "VideoToolbox"),
+        ("h264_nvenc",        "NVENC"),
+        ("h264_vaapi",        "VAAPI"),
+        ("h264_qsv",          "Quick Sync"),
+    ]
+
+    for enc, label in _PRIORITY:
+        if enc in available:
+            _encoder = enc
+            _encoder_label = label
+            logger.info("Transcode encoder: %s (%s)", enc, label)
+            return
+
+    _encoder = "libx264"
+    _encoder_label = "software"
+    logger.info("Transcode encoder: libx264 (software)")
+
+
+def get_encoder_info() -> dict:
+    """Return encoder name and label for capability reporting."""
+    return {"encoder": _encoder or "libx264", "label": _encoder_label or "software"}
 
 
 def is_transcoding() -> bool:
@@ -69,11 +133,49 @@ async def _get_duration(path: str) -> float | None:
         return None
 
 
-_QUALITY_PRESETS = {
-    "low":    {"preset": "fast",   "crf": "28", "audio": "96k"},
-    "medium": {"preset": "medium", "crf": "23", "audio": "128k"},
-    "high":   {"preset": "slow",   "crf": "18", "audio": "192k"},
+# Encoder-specific quality presets.
+# Each encoder maps quality level -> list of ffmpeg video args.
+# Audio args are shared across all encoders.
+_AUDIO_PRESETS = {
+    "low":    "96k",
+    "medium": "128k",
+    "high":   "192k",
 }
+
+_ENCODER_PRESETS = {
+    "libx264": {
+        "low":    ["-c:v", "libx264", "-preset", "fast",   "-crf", "28"],
+        "medium": ["-c:v", "libx264", "-preset", "medium", "-crf", "23"],
+        "high":   ["-c:v", "libx264", "-preset", "slow",   "-crf", "18"],
+    },
+    "h264_videotoolbox": {
+        "low":    ["-c:v", "h264_videotoolbox", "-q:v", "65"],
+        "medium": ["-c:v", "h264_videotoolbox", "-q:v", "45"],
+        "high":   ["-c:v", "h264_videotoolbox", "-q:v", "25"],
+    },
+    "h264_nvenc": {
+        "low":    ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "32"],
+        "medium": ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "26"],
+        "high":   ["-c:v", "h264_nvenc", "-preset", "p6", "-cq", "20"],
+    },
+    "h264_vaapi": {
+        "low":    ["-c:v", "h264_vaapi", "-qp", "30"],
+        "medium": ["-c:v", "h264_vaapi", "-qp", "24"],
+        "high":   ["-c:v", "h264_vaapi", "-qp", "18"],
+    },
+    "h264_qsv": {
+        "low":    ["-c:v", "h264_qsv", "-preset", "fast",   "-global_quality", "30"],
+        "medium": ["-c:v", "h264_qsv", "-preset", "medium", "-global_quality", "24"],
+        "high":   ["-c:v", "h264_qsv", "-preset", "slow",   "-global_quality", "18"],
+    },
+}
+
+
+def _build_video_args(quality: str) -> list[str]:
+    """Return the ffmpeg video codec args for the detected encoder and quality."""
+    encoder = _encoder or "libx264"
+    presets = _ENCODER_PRESETS.get(encoder, _ENCODER_PRESETS["libx264"])
+    return presets.get(quality, presets["medium"])
 
 
 async def start_transcode(path: str, quality: str = "medium") -> bool:
@@ -85,8 +187,7 @@ async def start_transcode(path: str, quality: str = "medium") -> bool:
 
     _cancel_flag = False
     _current_path = path
-    params = _QUALITY_PRESETS.get(quality, _QUALITY_PRESETS["medium"])
-    _task = asyncio.create_task(_run_transcode(path, params))
+    _task = asyncio.create_task(_run_transcode(path, quality))
     return True
 
 
@@ -115,7 +216,7 @@ async def _drain_stderr(proc):
     return b"".join(chunks)
 
 
-async def _run_transcode(path: str, params: dict | None = None):
+async def _run_transcode(path: str, quality: str = "medium"):
     """Run ffmpeg, writing to a temp dir, then move to the final location.
 
     The output is written outside the source folder so in-progress files
@@ -124,8 +225,9 @@ async def _run_transcode(path: str, params: dict | None = None):
     """
     global _cancel_flag, _current_path
 
-    if params is None:
-        params = _QUALITY_PRESETS["medium"]
+    video_args = _build_video_args(quality)
+    audio_bitrate = _AUDIO_PRESETS.get(quality, "128k")
+    encoder_label = _encoder_label or "software"
 
     tmp_dir = None
     try:
@@ -155,6 +257,7 @@ async def _run_transcode(path: str, params: dict | None = None):
             "output": final_path,
             "percent": 0,
             "status": "probing",
+            "encoder": encoder_label,
         })
 
         duration = await _get_duration(path)
@@ -166,18 +269,24 @@ async def _run_transcode(path: str, params: dict | None = None):
             "percent": 0,
             "status": "transcoding",
             "duration": duration,
+            "encoder": encoder_label,
         })
 
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-y",
+        cmd = [
+            "ffmpeg", "-y",
             "-i", path,
-            "-c:v", "libx264", "-preset", params["preset"], "-crf", params["crf"],
-            "-c:a", "aac", "-b:a", params["audio"],
+            *video_args,
+            "-c:a", "aac", "-b:a", audio_bitrate,
             "-movflags", "+faststart",
             "-progress", "pipe:1",
             "-nostats",
             tmp_output,
+        ]
+
+        logger.info("Transcode [%s/%s]: %s", encoder_label, quality, os.path.basename(path))
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -213,6 +322,7 @@ async def _run_transcode(path: str, params: dict | None = None):
                                 "output": final_path,
                                 "percent": round(percent, 1),
                                 "status": "transcoding",
+                                "encoder": encoder_label,
                             })
                     except ValueError:
                         pass

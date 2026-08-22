@@ -45,9 +45,10 @@ async def run_client():
     """Main client loop — connects, registers, handles messages. Reconnects on failure."""
     global _ws, _connected
 
-    # Wire up send functions
+    # Wire up send functions and detect encoder
     scanner.set_send_fn(send_message)
     transcode.set_send_fn(send_message)
+    transcode.detect_encoder()
 
     while True:
         try:
@@ -83,6 +84,7 @@ async def run_client():
                                 "quick_scan",
                                 "files_copy",
                             ] + (["ffmpeg"] if transcode.is_available() else []),
+                            "ffmpegEncoder": transcode.get_encoder_info() if transcode.is_available() else None,
                         }
                     )
                 )
