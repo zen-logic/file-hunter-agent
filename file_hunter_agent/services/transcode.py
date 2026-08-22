@@ -69,7 +69,14 @@ async def _get_duration(path: str) -> float | None:
         return None
 
 
-async def start_transcode(path: str) -> bool:
+_QUALITY_PRESETS = {
+    "low":    {"preset": "fast",   "crf": "28", "audio": "96k"},
+    "medium": {"preset": "medium", "crf": "23", "audio": "128k"},
+    "high":   {"preset": "slow",   "crf": "18", "audio": "192k"},
+}
+
+
+async def start_transcode(path: str, quality: str = "medium") -> bool:
     """Start a transcode. Returns False if already running."""
     global _task, _cancel_flag, _current_path
 
@@ -78,7 +85,8 @@ async def start_transcode(path: str) -> bool:
 
     _cancel_flag = False
     _current_path = path
-    _task = asyncio.create_task(_run_transcode(path))
+    params = _QUALITY_PRESETS.get(quality, _QUALITY_PRESETS["medium"])
+    _task = asyncio.create_task(_run_transcode(path, params))
     return True
 
 
@@ -107,7 +115,7 @@ async def _drain_stderr(proc):
     return b"".join(chunks)
 
 
-async def _run_transcode(path: str):
+async def _run_transcode(path: str, params: dict | None = None):
     """Run ffmpeg, writing to a temp dir, then move to the final location.
 
     The output is written outside the source folder so in-progress files
@@ -115,6 +123,9 @@ async def _run_transcode(path: str):
     belongs, and that's atomic on the same filesystem.
     """
     global _cancel_flag, _current_path
+
+    if params is None:
+        params = _QUALITY_PRESETS["medium"]
 
     tmp_dir = None
     try:
@@ -161,8 +172,8 @@ async def _run_transcode(path: str):
             "ffmpeg",
             "-y",
             "-i", path,
-            "-c:v", "libx264", "-preset", "medium", "-crf", "23",
-            "-c:a", "aac", "-b:a", "128k",
+            "-c:v", "libx264", "-preset", params["preset"], "-crf", params["crf"],
+            "-c:a", "aac", "-b:a", params["audio"],
             "-movflags", "+faststart",
             "-progress", "pipe:1",
             "-nostats",

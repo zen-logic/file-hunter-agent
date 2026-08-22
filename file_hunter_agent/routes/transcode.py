@@ -17,7 +17,8 @@ async def transcode_start(request: Request):
         return json_error("Path is not within a configured location.", status=403)
     if is_transcoding():
         return json_error("A transcode is already running.")
-    started = await start_transcode(path)
+    quality = body.get("quality", "medium")
+    started = await start_transcode(path, quality=quality)
     if not started:
         return json_error("Failed to start transcode.")
     return json_ok({"started": True})
