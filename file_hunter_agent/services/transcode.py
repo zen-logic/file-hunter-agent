@@ -149,9 +149,9 @@ _ENCODER_PRESETS = {
         "high":   ["-c:v", "libx264", "-preset", "slow",   "-crf", "18"],
     },
     "h264_videotoolbox": {
-        "low":    ["-c:v", "h264_videotoolbox", "-q:v", "65"],
+        "low":    ["-c:v", "h264_videotoolbox", "-q:v", "25"],
         "medium": ["-c:v", "h264_videotoolbox", "-q:v", "45"],
-        "high":   ["-c:v", "h264_videotoolbox", "-q:v", "25"],
+        "high":   ["-c:v", "h264_videotoolbox", "-q:v", "65"],
     },
     "h264_nvenc": {
         "low":    ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "32"],
